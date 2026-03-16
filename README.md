@@ -1,7 +1,7 @@
 # TraceScope
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="TraceScope demo animation" width="950">
+  <img src="docs/assets/demo-v2.gif" alt="TraceScope demo animation" width="950">
 </p>
 
 Embed, cluster, and visualize any collection of texts in 3D semantic space. TraceScope builds a rich semantic map from your data — complete with labeled axes, named clusters, and a trained flow field that reveals how meaning evolves across your texts.
