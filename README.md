@@ -1,13 +1,28 @@
 # TraceScope
 
 <p align="center">
-  <img src="docs/assets/demo-v2.gif" alt="TraceScope demo animation" width="950">
+  <img src="docs/assets/demo_v_3.gif" alt="TraceScope demo animation" width="950">
 </p>
 
-Embed, cluster, and visualize any collection of texts in 3D semantic space. TraceScope builds a rich semantic map from your data — complete with labeled axes, named clusters, and a trained flow field that reveals how meaning evolves across your texts.
+**TraceScope maps the flow of meaning**  
+Embed, cluster, and visualize any collection of texts in 3D semantic space — then learn a continuous semantic flow field over that space, so you can see not just where texts are, but how meaning tends to move between them.
 
-Works with **anything**: chatbot conversations, news headlines, research papers, product reviews, log entries, or any ordered collection of text.
+TraceScope builds a rich semantic map from your data — with labeled axes, named clusters, trajectories, and a trained flow model that reveals how themes, intent, style, or reasoning evolve across time.
 
+Works with **anything**: chatbot conversations, agent traces, news headlines, research papers, product reviews, diary entries, support logs, or any ordered collection of text.
+
+Use it in two ways:
+- **Interactive GUI** for visual exploration, interpretability, and presentation
+- **Lightweight API** for integration into LLM agents, observability pipelines, research tools, and semantic monitoring systems
+
+## Why TraceScope
+
+Most embedding tools show a static cloud of points. TraceScope goes further:
+
+- **Semantic structure** — discover clusters, labeled axes, and nearest neighbors
+- **Semantic dynamics** — model trajectories and learn a continuous flow field over sparse text sequences
+- **Interpretability** — inspect how a conversation, system, or dataset drifts, stabilizes, loops, or transitions
+- **Integration** — use the same semantic space programmatically through a lightweight query API
 ## Installation
 
 ```bash
@@ -37,7 +52,7 @@ OPENAI_API_KEY=sk-...
 ## Quick Start
 
 ### Analyze a chatbot conversation
-
+Useful for real-world agent debugging: reveal hidden conversational attractors, looping failure modes, unstable transitions, and recovery trajectories in multi-turn chats
 ```python
 from tracescope import TraceScopeConfig, AnalysisPipeline, auto_import
 
@@ -57,7 +72,7 @@ result = pipeline.analyze(session, cache_path="my_analysis")
 ```
 
 ### Analyze any list of texts
-
+Turn any ordered text collection into a semantic trajectory to reveal recurring human states, emotional patterns, behavioral loops, and emerging trends over time
 ```python
 from tracescope import TraceScopeConfig, AnalysisPipeline, from_list
 
@@ -286,17 +301,6 @@ launch_renderer(result)
 # With LLM explanations (pass the pipeline's explainer)
 launch_renderer(result, explainer=pipeline.explainer)
 ```
-
-**Keyboard shortcuts** (when 3D canvas has focus):
-| Key | Action |
-|-----|--------|
-| Space | Toggle flow animation |
-| B | Toggle ball/probe following flow |
-| P | Toggle data points |
-| L | Toggle path line |
-| +/- | Adjust particle size |
-| R | Reset camera |
-| Esc | Quit |
 
 **GUI panels** (left sidebar):
 - **Flow Controls** — flow animation and ball/probe toggle

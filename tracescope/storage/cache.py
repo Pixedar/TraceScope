@@ -26,7 +26,7 @@ class LLMResponseCache:
         self.db_path = db_path
         self.enabled = enabled
         if enabled:
-            self._conn = sqlite3.connect(db_path)
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._init_table()
         else:
             self._conn = None
@@ -96,7 +96,7 @@ class ResultCache:
         self.db_path = db_path
         self.enabled = enabled
         if enabled:
-            self._conn = sqlite3.connect(db_path)
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
             self._init_table()
         else:
             self._conn = None

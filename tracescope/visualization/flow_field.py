@@ -115,6 +115,7 @@ class FlowFieldSystem:
         axis_min: np.ndarray,
         axis_max: np.ndarray,
         particle_grid: int = 20,
+        path_points: Optional[np.ndarray] = None,
     ):
         self.velocity_grid = velocity_grid.astype(np.float32)
         self.grid_size = velocity_grid.shape[0]  # typically 40
@@ -126,11 +127,17 @@ class FlowFieldSystem:
         self.particle_count = particle_grid ** 3
         self.speed_multiplier = 1.0
 
+        # Build path occupancy mask for blob-based spawning
+        self._path_mask = None
+        self._mask_res = 0
+        if path_points is not None and len(path_points) >= 2:
+            self._build_path_mask(path_points)
+
         # Particle state
         self.pos = np.zeros((self.particle_count, 3), dtype=np.float32)
         self.age = np.zeros(self.particle_count, dtype=np.int32)
 
-        # Initialize on lattice
+        # Initialize on lattice (filtered by path mask if available)
         self._init_lattice()
         # Pre-integrate to displace from regular lattice (matching Android)
         self._dry_integrate(self.PRE_AGE)
@@ -148,22 +155,115 @@ class FlowFieldSystem:
         self.ball_trail: list = []
         self.ball_flowing = False
 
+    # ── Blob tuning constants ──────────────────────────────────
+    # BLOB_RESOLUTION: occupancy grid resolution (higher = finer blob shape)
+    BLOB_RESOLUTION = 42
+    # BLOB_RADIUS: influence radius around each path point, as fraction of
+    #   the per-axis span. Increase for a looser blob, decrease for tighter.
+    #   Located here for easy tuning.
+    BLOB_RADIUS = 0.04
+
+    def _build_path_mask(self, path_points: np.ndarray):
+        """Build a 3D boolean occupancy grid from path sample points.
+
+        For each cell centre in a BLOB_RESOLUTION³ grid, marks it True if
+        any path sample point is within BLOB_RADIUS * span[axis] on every
+        axis (Chebyshev neighbourhood, per-axis scaled).  This respects
+        non-uniform axis scales and gives a tight-fitting blob.
+
+        Args:
+            path_points: (M, 3) densely sampled points along semantic paths.
+        """
+        res = self.BLOB_RESOLUTION
+        self._mask_res = res
+        radius_frac = self.BLOB_RADIUS
+
+        pp = np.asarray(path_points, dtype=np.float32)
+
+        # Normalize path points to [0, 1] per axis
+        norm = np.zeros_like(pp)
+        for a in range(3):
+            if self.span[a] > 0:
+                norm[:, a] = (pp[:, a] - self.axis_min[a]) / self.span[a]
+
+        # Build cell centres in [0, 1]
+        mask = np.zeros((res, res, res), dtype=bool)
+
+        # Per-axis radius in normalized [0,1] coords
+        r = radius_frac  # same fraction applied uniformly
+
+        # For each path point, mark cells whose centre is within radius
+        # Convert path points to cell indices and mark a box of cells
+        r_cells = int(np.ceil(r * (res - 1)))
+
+        for p in range(len(norm)):
+            # Cell index of this path point
+            ci = int(round(norm[p, 0] * (res - 1)))
+            cj = int(round(norm[p, 1] * (res - 1)))
+            ck = int(round(norm[p, 2] * (res - 1)))
+
+            i0, i1 = max(0, ci - r_cells), min(res, ci + r_cells + 1)
+            j0, j1 = max(0, cj - r_cells), min(res, cj + r_cells + 1)
+            k0, k1 = max(0, ck - r_cells), min(res, ck + r_cells + 1)
+            mask[i0:i1, j0:j1, k0:k1] = True
+
+        self._path_mask = mask
+        # Store for debug visualization
+        self._path_mask_norm = norm
+
+    def _point_in_blob_world(self, x, y, z):
+        """Check if a world-space point is inside the path blob."""
+        if self._path_mask is None:
+            return True
+        r = self._mask_res
+        # Convert world coords to [0,1] normalized
+        nx = (x - self.axis_min[0]) / self.span[0] if self.span[0] > 0 else 0.5
+        ny = (y - self.axis_min[1]) / self.span[1] if self.span[1] > 0 else 0.5
+        nz = (z - self.axis_min[2]) / self.span[2] if self.span[2] > 0 else 0.5
+        ix = max(0, min(r - 1, int(round(nx * (r - 1)))))
+        iy = max(0, min(r - 1, int(round(ny * (r - 1)))))
+        iz = max(0, min(r - 1, int(round(nz * (r - 1)))))
+        return self._path_mask[ix, iy, iz]
+
     def _init_lattice(self):
-        """Initialize particles on a regular 3D lattice."""
+        """Initialize particles, constrained to path blob if available."""
         margin = 0.05
-        idx = 0
         g = self.particle_grid
-        for i in range(g):
-            for j in range(g):
-                for k in range(g):
-                    fx = i / (g - 1) if g > 1 else 0.5
-                    fy = j / (g - 1) if g > 1 else 0.5
-                    fz = k / (g - 1) if g > 1 else 0.5
-                    self.pos[idx, 0] = self.axis_min[0] + (margin + fx * (1 - 2 * margin)) * self.span[0]
-                    self.pos[idx, 1] = self.axis_min[1] + (margin + fy * (1 - 2 * margin)) * self.span[1]
-                    self.pos[idx, 2] = self.axis_min[2] + (margin + fz * (1 - 2 * margin)) * self.span[2]
-                    self.age[idx] = 0
-                    idx += 1
+
+        if self._path_mask is None:
+            # Original bounding-box lattice
+            idx = 0
+            for i in range(g):
+                for j in range(g):
+                    for k in range(g):
+                        fx = i / (g - 1) if g > 1 else 0.5
+                        fy = j / (g - 1) if g > 1 else 0.5
+                        fz = k / (g - 1) if g > 1 else 0.5
+                        self.pos[idx, 0] = self.axis_min[0] + (margin + fx * (1 - 2 * margin)) * self.span[0]
+                        self.pos[idx, 1] = self.axis_min[1] + (margin + fy * (1 - 2 * margin)) * self.span[1]
+                        self.pos[idx, 2] = self.axis_min[2] + (margin + fz * (1 - 2 * margin)) * self.span[2]
+                        self.age[idx] = 0
+                        idx += 1
+        else:
+            # Blob-constrained: uniform random sampling inside the mask
+            idx = 0
+            rng = np.random.default_rng(42)
+            batch = max(self.particle_count * 4, 10000)
+            while idx < self.particle_count:
+                # Generate random world-space positions within the domain
+                candidates = np.empty((batch, 3), dtype=np.float32)
+                for a in range(3):
+                    lo = self.axis_min[a] + margin * self.span[a]
+                    hi = self.axis_max[a] - margin * self.span[a]
+                    candidates[:, a] = rng.uniform(lo, hi, batch).astype(np.float32)
+                for c in range(len(candidates)):
+                    if idx >= self.particle_count:
+                        break
+                    x, y, z = candidates[c]
+                    if self._point_in_blob_world(x, y, z):
+                        self.pos[idx] = candidates[c]
+                        self.age[idx] = 0
+                        idx += 1
 
     def _dry_integrate(self, steps: int):
         """Pre-integrate without recording, to break lattice regularity.
@@ -307,16 +407,43 @@ class FlowFieldSystem:
 
         return self.pos.copy(), colors, alphas, speeds
 
+    def is_outside_blob(self, x, y, z) -> bool:
+        """Check if a world-space point is outside the path blob."""
+        return self._path_mask is not None and not self._point_in_blob_world(x, y, z)
+
+    def get_blob_surface_points(self) -> Optional[np.ndarray]:
+        """Return world-space points on the blob surface for debug viz.
+
+        Samples all mask-True cells and returns their centres.
+        """
+        if self._path_mask is None:
+            return None
+        r = self._mask_res
+        indices = np.argwhere(self._path_mask)  # (N, 3) of (i,j,k)
+        if len(indices) == 0:
+            return None
+        # Convert grid indices to world coords
+        pts = np.zeros((len(indices), 3), dtype=np.float32)
+        for a in range(3):
+            pts[:, a] = self.axis_min[a] + (indices[:, a] / (r - 1)) * self.span[a]
+        return pts
+
     def advance_ball(self) -> np.ndarray:
         """Advance the ball probe by one step along the flow field.
 
         Uses 0.8 * DT for slower movement (matching Android's dtSlow).
+        Decelerates heavily when outside the path blob.
 
         Returns:
             New ball position (3,) array.
         """
         v = self.sample_velocity(*self.ball_pos)
         dt_slow = self.DT * 0.8 * self.speed_multiplier
+
+        # Slow down to 10% speed when outside blob
+        if self.is_outside_blob(*self.ball_pos):
+            dt_slow *= 0.1
+
         self.ball_pos = self.ball_pos + v * dt_slow
 
         # Clamp to domain
@@ -337,6 +464,20 @@ class FlowFieldSystem:
         """Reinitialize particles with a new grid resolution."""
         self.particle_grid = new_grid
         self.particle_count = new_grid ** 3
+        self.pos = np.zeros((self.particle_count, 3), dtype=np.float32)
+        self.age = np.zeros(self.particle_count, dtype=np.int32)
+        self._init_lattice()  # respects existing _path_mask
+        self._dry_integrate(self.PRE_AGE)
+        self.orig_pos = self.pos.copy()
+        self.age = np.random.randint(0, self.LIFESPAN, self.particle_count, dtype=np.int32)
+
+    def set_path_points(self, path_points: np.ndarray):
+        """Update the path mask and reinitialize particles."""
+        if path_points is not None and len(path_points) >= 2:
+            self._build_path_mask(path_points)
+        else:
+            self._path_mask = None
+        # Reinitialize with current grid size
         self.pos = np.zeros((self.particle_count, 3), dtype=np.float32)
         self.age = np.zeros(self.particle_count, dtype=np.int32)
         self._init_lattice()

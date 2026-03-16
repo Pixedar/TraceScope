@@ -2,7 +2,12 @@
 
 import logging
 import json
+import warnings
 import numpy as np
+
+# Suppress UMAP's noisy n_jobs warning when random_state is set
+warnings.filterwarnings("ignore", message="n_jobs value.*overridden to 1 by setting random_state")
+
 import umap
 from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score

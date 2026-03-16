@@ -25,6 +25,7 @@ Requires:  pip install vispy PyOpenGL PyQt5   (or PySide6)
 
 from __future__ import annotations
 
+import threading
 import numpy as np
 
 try:
@@ -338,7 +339,20 @@ class FlowRenderer:
         self._manual_slider_override = False
         self._control_points: list = []
         self._particle_grid = particle_grid
-        self._simple_lines = False
+        self._spline_path = False  # default: straight lines; True = Catmull-Rom splines
+        self._explain_pending = None  # async explain result (set by bg thread, consumed by timer)
+
+        # ── Cluster centroids + colors for particle coloring ──
+        n_cls = result.clusters.n_clusters
+        self._cluster_centroids = (
+            result.cluster_centroids_3d.astype(np.float32)
+            if result.cluster_centroids_3d is not None
+            else np.zeros((n_cls, 3), dtype=np.float32)
+        )
+        self._cluster_colors_arr = np.array([
+            CLUSTER_COLORS_GL[c % len(CLUSTER_COLORS_GL)][:3]
+            for c in range(n_cls)
+        ], dtype=np.float32)  # (K, 3)
 
         # ── Bounds ────────────────────────────────────
         pts = result.projected_3d
@@ -350,12 +364,20 @@ class FlowRenderer:
                           if result.axis_max is not None
                           else pts.max(axis=0).astype(np.float32) + 0.1)
 
+        # ── Path sample points for flow blob (computed before flow init) ──
+        self._path_sample_pts = None
+        if len(result.projected_3d) >= 2:
+            self._path_sample_pts = catmull_rom_spline(
+                result.projected_3d, 20
+            ).astype(np.float32)
+
         # ── Flow system ──────────────────────────────
         self.flow: FlowFieldSystem | None = None
         if self._has_flow:
             self.flow = FlowFieldSystem(
                 result.velocity_grid, self._axis_min, self._axis_max,
                 particle_grid=particle_grid,
+                path_points=self._path_sample_pts,
             )
 
         # Pre-allocate flow RGBA buffer for performance
@@ -410,8 +432,10 @@ class FlowRenderer:
 
         # Spline path — both Tube and Line visuals (toggle with Simple Lines)
         spline_pts, spline_colors = self._compute_path()
-        # Slight transparency so path doesn't fully occlude flow particles
-        spline_colors[:, 3] = 0.88
+        self._spline_pts = spline_pts  # store for blob computation
+        # Base alpha for path
+        self._path_base_alpha = 0.88
+        spline_colors[:, 3] = self._path_base_alpha
 
         # Tube path (no directional lighting — flat vertex colors)
         tube_points = 10
@@ -429,15 +453,17 @@ class FlowRenderer:
                 parent=self.view.scene, antialias=True,
             )
         self.vis_path_tube.order = 2
-        self.vis_path_tube.visible = self.show_path and not self._simple_lines
+        self.vis_path_tube.visible = self.show_path and self._spline_path
 
-        # Simple line path
+        # Simple line path — straight lines between actual data points
+        straight_pts, straight_colors = self._compute_straight_path()
+        straight_colors[:, 3] = self._path_base_alpha
         self.vis_path_line = scene.visuals.Line(
-            pos=spline_pts, color=spline_colors, width=3,
+            pos=straight_pts, color=straight_colors, width=3,
             parent=self.view.scene, antialias=True,
         )
         self.vis_path_line.order = 2
-        self.vis_path_line.visible = self.show_path and self._simple_lines
+        self.vis_path_line.visible = self.show_path and not self._spline_path
 
         # Probe marker (yellow)
         self.vis_probe = ClusterPoint(point_size=15.0, parent=self.view.scene)
@@ -475,6 +501,20 @@ class FlowRenderer:
         )
         self.vis_trail.order = 4
         self.vis_trail.visible = False
+
+        # Debug: blob boundary visualization (toggle with D key)
+        # Shows a point cloud of the blob-occupied cells as semi-transparent markers
+        self._debug_blob = False
+        self.vis_blob_debug = ClusterPoint(point_size=4.0, parent=self.view.scene)
+        self.vis_blob_debug.order = 6
+        self.vis_blob_debug.visible = False
+        if self.flow is not None:
+            blob_pts = self.flow.get_blob_surface_points()
+            if blob_pts is not None:
+                blob_colors = np.ones((len(blob_pts), 4), dtype=np.float32)
+                blob_colors[:, :3] = [0.2, 0.8, 0.4]  # green
+                blob_colors[:, 3] = 0.15  # very transparent
+                self.vis_blob_debug.set_data(blob_pts, blob_colors)
 
         # Axes + labels
         self._setup_axes()
@@ -519,6 +559,18 @@ class FlowRenderer:
 
         return spline, spline_colors
 
+    def _compute_straight_path(self):
+        """Straight lines between actual data points with cluster colors."""
+        pts = self.result.projected_3d
+        if len(pts) < 2:
+            return np.zeros((2, 3), dtype=np.float32), np.array([[1, 0, 0, 1]] * 2, dtype=np.float32)
+
+        pts = pts.astype(np.float32)
+        colors = np.zeros((len(pts), 4), dtype=np.float32)
+        for i, label in enumerate(self.result.clusters.labels):
+            colors[i] = CLUSTER_COLORS_GL[label % len(CLUSTER_COLORS_GL)]
+        return pts, colors
+
     def _setup_axes(self):
         mn, mx = self._axis_min, self._axis_max
         self.vis_axes = []
@@ -533,18 +585,25 @@ class FlowRenderer:
             line.order = 5
             self.vis_axes.append(line)
 
+    # ── Axis label config (adjust here) ────────────────────
+    # AXIS_LABEL_SIZE: font size for 3D axis labels (default 36)
+    # Located at gl_renderer.py ~line 590 for easy manual tuning.
+    AXIS_LABEL_SIZE = 39
+
     def _setup_axis_labels(self):
         mn, mx = self._axis_min, self._axis_max
         labels = getattr(self.result.axis_info, 'labels', ['Axis 1', 'Axis 2', 'Axis 3'])
+        axis_names = ['X', 'Y', 'Z']
         self.vis_labels = []
         offset = (mx - mn) * 0.03
         for i in range(3):
             pos = mn.copy()
             pos[i] = mx[i] + offset[i]
+            label_text = labels[i] if i < len(labels) else f'Axis {i+1}'
             t = scene.visuals.Text(
-                text=labels[i] if i < len(labels) else f'Axis {i+1}',
+                text=f'{axis_names[i]}: {label_text}',
                 pos=pos.reshape(1, 3).astype(np.float32),
-                color=AXIS_COLORS[i][:3], font_size=9,
+                color=AXIS_COLORS[i][:3], font_size=self.AXIS_LABEL_SIZE,
                 parent=self.view.scene, anchor_x='left',
             )
             t.order = 6
@@ -599,7 +658,7 @@ class FlowRenderer:
         self.chk_flow.toggled.connect(self._qt_flow_toggle)
         gl.addWidget(self.chk_flow)
 
-        self.chk_ball = QtWidgets.QCheckBox("Ball Flow (follow MDN)")
+        self.chk_ball = QtWidgets.QCheckBox("Drag probe by the flow")
         self.chk_ball.setChecked(self._has_flow)
         self.chk_ball.setEnabled(self._has_flow)
         self.chk_ball.toggled.connect(self._qt_ball_toggle)
@@ -622,10 +681,10 @@ class FlowRenderer:
         self.chk_path.toggled.connect(self._qt_path_toggle)
         gl.addWidget(self.chk_path)
 
-        self.chk_simple_lines = QtWidgets.QCheckBox("Simple Lines")
-        self.chk_simple_lines.setChecked(False)
-        self.chk_simple_lines.toggled.connect(self._qt_simple_lines)
-        gl.addWidget(self.chk_simple_lines)
+        self.chk_spline_path = QtWidgets.QCheckBox("Spline Path")
+        self.chk_spline_path.setChecked(False)
+        self.chk_spline_path.toggled.connect(self._qt_spline_path)
+        gl.addWidget(self.chk_spline_path)
 
         self.chk_info_overlay = QtWidgets.QCheckBox("Show Info Overlay")
         self.chk_info_overlay.setChecked(True)
@@ -726,9 +785,13 @@ class FlowRenderer:
         self._flow_color_mode = "speed"
         self._chk_entropy = QtWidgets.QCheckBox("Entropy Colors")
         self._chk_entropy.setChecked(False)
-        self._chk_entropy.toggled.connect(
-            lambda v: setattr(self, '_flow_color_mode', 'entropy' if v else 'speed'))
+        self._chk_entropy.toggled.connect(self._qt_entropy_colors)
         gl.addWidget(self._chk_entropy)
+
+        self._chk_cluster_colors = QtWidgets.QCheckBox("Cluster Colors")
+        self._chk_cluster_colors.setChecked(False)
+        self._chk_cluster_colors.toggled.connect(self._qt_cluster_colors)
+        gl.addWidget(self._chk_cluster_colors)
 
         grp.setLayout(gl)
         grp.setEnabled(self._has_flow)
@@ -809,6 +872,22 @@ class FlowRenderer:
         self._point_overlay.adjustSize()
         self._point_overlay.setVisible(False)
 
+        # ── Explanation overlay (bottom-center, bold, larger) ──
+        self._explain_overlay = QtWidgets.QLabel(canvas_widget)
+        self._explain_overlay.setStyleSheet(
+            "background: rgba(15, 15, 15, 200); color: white; "
+            "font-family: Consolas, monospace; font-size: 13px; font-weight: bold; "
+            "padding: 12px 16px; border-radius: 6px;"
+        )
+        self._explain_overlay.setWordWrap(True)
+        self._explain_overlay.setTextFormat(QtCore.Qt.PlainText)
+        self._explain_overlay.setMaximumWidth(500)
+        self._explain_overlay.setText("")
+        self._explain_overlay.adjustSize()
+        self._explain_overlay.setVisible(False)
+        # Click to dismiss
+        self._explain_overlay.mousePressEvent = lambda e: self._explain_overlay.setVisible(False)
+
         # Connect canvas resize to reposition overlays
         self.canvas.events.resize.connect(self._reposition_overlays)
 
@@ -826,10 +905,34 @@ class FlowRenderer:
         pw = self._point_overlay.width()
         self._point_overlay.move((w - pw) // 2, h - self._point_overlay.height() - 10)
 
+        # Explain overlay: bottom-center, above point overlay
+        if hasattr(self, '_explain_overlay') and self._explain_overlay.isVisible():
+            ew = self._explain_overlay.width()
+            self._explain_overlay.move(
+                (w - ew) // 2,
+                h - self._explain_overlay.height() - 20
+            )
+
     def _sync_path_visibility(self):
-        """Update tube/line path visibility based on current flags."""
-        self.vis_path_tube.visible = self.show_path and not self._simple_lines
-        self.vis_path_line.visible = self.show_path and self._simple_lines
+        """Update tube/line path visibility and alpha based on current flags."""
+        self.vis_path_tube.visible = self.show_path and self._spline_path
+        self.vis_path_line.visible = self.show_path and not self._spline_path
+        # When flow is active alongside paths, make paths more transparent
+        if self.show_path and self.flow_active:
+            alpha = self._path_base_alpha - 0.20  # -20% when flow is visible
+        else:
+            alpha = self._path_base_alpha
+        self._update_path_alpha(alpha)
+
+    def _update_path_alpha(self, alpha):
+        """Update alpha on whichever path visual is active."""
+        # For the simple line visual — update color array alpha
+        if hasattr(self, 'vis_path_line') and self.vis_path_line.visible:
+            straight_pts, straight_colors = self._compute_straight_path()
+            straight_colors[:, 3] = alpha
+            self.vis_path_line.set_data(pos=straight_pts, color=straight_colors)
+        # Tube doesn't support easy alpha updates (mesh), so we rebuild only
+        # if needed — for now, tube alpha is set at build time
 
     def _qt_info_overlay_toggle(self, checked):
         if hasattr(self, '_info_overlay'):
@@ -853,9 +956,23 @@ class FlowRenderer:
             self.flow.set_particle_grid(value)
             self._flow_rgba = np.empty((self.flow.particle_count, 4), dtype=np.float32)
 
-    def _qt_simple_lines(self, checked):
-        self._simple_lines = checked
+    def _qt_spline_path(self, checked):
+        self._spline_path = checked
         self._sync_path_visibility()
+
+    def _qt_entropy_colors(self, checked):
+        if checked:
+            self._flow_color_mode = 'entropy'
+            self._chk_cluster_colors.setChecked(False)
+        elif self._flow_color_mode == 'entropy':
+            self._flow_color_mode = 'speed'
+
+    def _qt_cluster_colors(self, checked):
+        if checked:
+            self._flow_color_mode = 'cluster'
+            self._chk_entropy.setChecked(False)
+        elif self._flow_color_mode == 'cluster':
+            self._flow_color_mode = 'speed'
 
     # ═══════════════════════════════════════════════════
     #  Qt signal handlers
@@ -864,6 +981,7 @@ class FlowRenderer:
     def _qt_flow_toggle(self, checked):
         self.flow_active = checked
         self.vis_flow.visible = checked
+        self._sync_path_visibility()  # update path transparency
 
     def _qt_ball_toggle(self, checked):
         self.ball_flowing = checked
@@ -913,41 +1031,57 @@ class FlowRenderer:
 
         pos = self._probe_pos_from_sliders()
         px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+        control_points = list(self._control_points)  # snapshot
 
         self._show_explain("Generating explanation...")
+        self._explain_pending = None  # will be set by background thread
 
-        if self._control_points:
+        def _run():
+            import logging
+            logger = logging.getLogger(__name__)
             try:
-                text = self._build_multi_explain()
-                self._show_explain(text)
+                if control_points:
+                    text = self._build_multi_explain()
+                else:
+                    info = probe_with_explanation(
+                        self.result, self._explainer, px, py, pz)
+                    lines = [f"LLM Explanation:\n{info['explanation']}\n"]
+                    lines.append("Nearest messages:")
+                    for item in info["nearest_texts"][:3]:
+                        lines.append(f"  [{item['role']}] {item['text'][:100]}...")
+                    text = "\n".join(lines)
+                logger.info("Explain completed successfully")
+                self._explain_pending = text
             except Exception as e:
-                self._show_explain(f"Explain error: {e}")
-        else:
-            try:
-                info = probe_with_explanation(
-                    self.result, self._explainer, px, py, pz)
-                lines = [f"LLM Explanation:\n{info['explanation']}\n"]
-                lines.append("Nearest messages:")
-                for item in info["nearest_texts"][:3]:
-                    lines.append(f"  [{item['role']}] {item['text'][:100]}...")
-                self._show_explain("\n".join(lines))
-            except Exception as e:
-                self._show_explain(f"Explain error: {e}")
+                logger.error(f"Explain failed: {e}", exc_info=True)
+                self._explain_pending = f"Explain error: {e}"
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
 
     def _show_explain(self, text: str):
-        """Show text in the explanation panel in the sidebar."""
+        """Show text in both the sidebar panel and the canvas overlay."""
         if hasattr(self, '_explain_text'):
             self._explain_text.setPlainText(text)
             self._explain_group.setVisible(True)
+        # Also show on canvas overlay (bold, bottom-center)
+        if hasattr(self, '_explain_overlay'):
+            # Truncate for overlay display (max ~200 chars)
+            display = text
+            if len(display) > 300:
+                display = display[:300] + "..."
+            self._explain_overlay.setText(display)
+            self._explain_overlay.adjustSize()
+            self._explain_overlay.setVisible(True)
+            self._reposition_overlays()
 
     def _build_multi_explain(self) -> str:
         """Build multi-point path explanation via LLM."""
-        lines = ["Control Points Path:\n"]
         all_pcts = []
         all_dists = []
         axis_labels = None
 
-        for i, cp in enumerate(self._control_points):
+        for cp in self._control_points:
             info = probe_point(self.result, cp[0], cp[1], cp[2])
             pcts = info["axis_percentages"]
             dists = info["cluster_distances"]
@@ -956,27 +1090,17 @@ class FlowRenderer:
             all_pcts.append(list(pcts.values()))
             all_dists.append(dists)
 
-            pct_str = ", ".join(f"{k}: {v:.0f}%" for k, v in pcts.items())
-            dist_str = ", ".join(f"{k}: {v:.0f}%" for k, v in dists.items())
-            lines.append(f"  Point {i}: {pct_str}")
-            lines.append(f"    Clusters: {dist_str}")
-
-        try:
-            control_points_for_llm = []
-            for pcts_vals, dists_dict in zip(all_pcts, all_dists):
-                control_points_for_llm.append({
-                    "axis_pcts": [int(v) for v in pcts_vals],
-                    "cluster_distances": [(k, int(v)) for k, v in dists_dict.items()],
-                })
-            explanation = self._explainer.explain_probe_multi(
-                axis_labels=axis_labels,
-                control_points=control_points_for_llm,
-            )
-            lines.append(f"\nLLM Analysis:\n{explanation}")
-        except Exception as e:
-            lines.append(f"\nExplain error: {e}")
-
-        return "\n".join(lines)
+        control_points_for_llm = []
+        for pcts_vals, dists_dict in zip(all_pcts, all_dists):
+            control_points_for_llm.append({
+                "axis_pcts": [int(v) for v in pcts_vals],
+                "cluster_distances": [(k, int(v)) for k, v in dists_dict.items()],
+            })
+        explanation = self._explainer.explain_probe_multi(
+            axis_labels=axis_labels,
+            control_points=control_points_for_llm,
+        )
+        return explanation
 
     # ═══════════════════════════════════════════════════
     #  Helpers
@@ -1015,16 +1139,20 @@ class FlowRenderer:
             return
         try:
             info = probe_point(self.result, float(pos[0]), float(pos[1]), float(pos[2]))
-            axis_labels = getattr(self.result.axis_info, 'labels', ['X', 'Y', 'Z'])
             lines = []
+            # Warn if probe is outside the semantic blob
+            if self.flow is not None and self.flow.is_outside_blob(
+                    float(pos[0]), float(pos[1]), float(pos[2])):
+                lines.append("!! OUTSIDE SEMANTIC REGION !!")
+                lines.append("(sparse data — flow may be unreliable)")
+                lines.append("")
+            lines.append("— Probe Location —")
             for name, pct in info['axis_percentages'].items():
-                lines.append(f"{name}: {pct:.1f}%")
+                lines.append(f"  {name}: {pct:.1f}%")
             lines.append("")
+            lines.append("— Distance to Clusters —")
             for name, d in info['cluster_distances'].items():
-                lines.append(f"{name}: {d:.1f}%")
-            lines.append("")
-            for item in info['nearest_texts'][:2]:
-                lines.append(f"[{item['role']}] {item['text'][:60]}...")
+                lines.append(f"  {name}: {d:.1f}%")
             self._info_overlay.setText("\n".join(lines))
             self._info_overlay.adjustSize()
             self._reposition_overlays()
@@ -1057,6 +1185,12 @@ class FlowRenderer:
         self._last_time = now
         self._frame_count += 1
 
+        # Check for async explain result
+        pending = getattr(self, '_explain_pending', None)
+        if pending is not None:
+            self._explain_pending = None
+            self._show_explain(pending)
+
         # --- Auto-rotation disabled (kept for future use) ---
         # if self.auto_rotate:
         #     cam = self.view.camera
@@ -1066,12 +1200,26 @@ class FlowRenderer:
         if self.flow_active and self.flow is not None:
             pos, colors, alphas, speeds = self.flow.step()
 
-            # Color mode: diverging colormap for entropy
-            if getattr(self, '_flow_color_mode', 'speed') == 'entropy':
+            # Color mode selection
+            color_mode = getattr(self, '_flow_color_mode', 'speed')
+            if color_mode == 'entropy':
                 from tracescope.visualization.flow_field import diverging_colormap
                 max_speed = speeds.max() if speeds.max() > 0 else 1.0
                 t = (speeds / max_speed) * 2.0 - 1.0
                 colors = diverging_colormap(t).astype(np.float32)
+            elif color_mode == 'cluster':
+                # Color by inverse-distance-weighted blend of cluster colors
+                centroids = self._cluster_centroids  # (K, 3)
+                dists = np.linalg.norm(
+                    pos[:, None, :] - centroids[None, :, :], axis=2
+                )  # (N, K)
+                # Inverse distance weights with softening to avoid div-by-zero
+                # Power of 3 gives a smooth but visible gradient between clusters
+                eps = 1e-6
+                inv_dists = 1.0 / (dists + eps) ** 3  # (N, K)
+                weights = inv_dists / inv_dists.sum(axis=1, keepdims=True)  # (N, K)
+                # Weighted blend of cluster colors
+                colors = (weights[:, :, None] * self._cluster_colors_arr[None, :, :]).sum(axis=1)  # (N, 3)
 
             rgba = self._flow_rgba
             if rgba is None or len(rgba) != len(pos):
@@ -1117,6 +1265,7 @@ class FlowRenderer:
             self.flow_active = not self.flow_active
             self.vis_flow.visible = self.flow_active
             self.vis_clusters.visible = self.show_points
+            self._sync_path_visibility()
             if QtWidgets and hasattr(self, 'chk_flow'):
                 self.chk_flow.setChecked(self.flow_active)
         elif key == 'B' and self._has_flow and self.flow:
@@ -1156,6 +1305,10 @@ class FlowRenderer:
         elif key == '-':
             self.base_size /= 1.2
             self.vis_flow.set_base_size(self.base_size)
+        elif key == 'D':
+            # Toggle debug blob visualization
+            self._debug_blob = not self._debug_blob
+            self.vis_blob_debug.visible = self._debug_blob
         elif key == 'Escape':
             self.close()
 
