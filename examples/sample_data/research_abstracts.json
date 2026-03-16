@@ -1,0 +1,12 @@
+[
+  "We propose a novel transformer architecture that reduces computational complexity from quadratic to linear while maintaining competitive performance on standard NLP benchmarks. Our method uses locality-sensitive hashing to approximate full attention.",
+  "This paper presents a comprehensive analysis of soil microbiome diversity across agricultural regions. We identify key bacterial species correlated with crop yield and demonstrate that targeted probiotic interventions can increase productivity by 23%.",
+  "We introduce a reinforcement learning framework for autonomous drone navigation in urban environments. The agent learns collision avoidance and path optimization through simulated training, achieving a 97% success rate in real-world tests.",
+  "Our study examines the psychological effects of remote work on employee well-being. Survey data from 5,000 participants reveals that hybrid models produce the highest job satisfaction scores while fully remote arrangements correlate with increased isolation.",
+  "We develop a new class of biodegradable polymers derived from agricultural waste. These materials match the mechanical properties of conventional plastics while decomposing completely within 180 days under standard composting conditions.",
+  "This work presents a graph neural network approach for drug-protein interaction prediction. By encoding molecular structures as graphs, we achieve state-of-the-art accuracy in identifying potential drug candidates for rare diseases.",
+  "We analyze the economic impact of universal basic income trials across four countries. Our findings suggest that direct cash transfers increase entrepreneurship rates by 15% without significantly reducing labor force participation.",
+  "A novel photovoltaic cell design using perovskite-silicon tandem layers achieves 33.7% power conversion efficiency, setting a new record for commercially viable solar technology.",
+  "We present evidence that large language models develop internal representations analogous to world models during pre-training. Probing experiments reveal structured spatial and temporal reasoning capabilities emerging without explicit supervision.",
+  "This longitudinal study tracks cognitive development in bilingual children over seven years. Results indicate enhanced executive function and metalinguistic awareness compared to monolingual peers, with effects persisting into adolescence."
+]

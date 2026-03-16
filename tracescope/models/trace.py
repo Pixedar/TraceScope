@@ -1,0 +1,131 @@
+"""
+Data models for LLM conversation traces.
+
+TraceEntry  – a single message or reasoning step.
+TraceSession – an ordered collection of entries from one conversation.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Optional, List
+
+import numpy as np
+
+
+@dataclass
+class TraceEntry:
+    """A single message or reasoning step in a conversation.
+
+    Attributes:
+        text: The raw text content.
+        role: One of "user", "assistant", "system", "reasoning", "tool", "entry".
+        step_index: Position in the conversation (0-based, path-local for multi-path).
+        session_id: ID of the owning TraceSession.
+        embedding: High-dim embedding vector (set after embedding step).
+        model_name: Which embedding model produced the embedding.
+        timestamp: Unix timestamp (optional).
+        path_id: Which path this entry belongs to (None = single-path mode).
+        metadata: Arbitrary extra data (token counts, tool calls, etc.).
+    """
+
+    text: str
+    role: str
+    step_index: int
+    session_id: str
+    embedding: Optional[np.ndarray] = None
+    model_name: Optional[str] = None
+    timestamp: Optional[float] = None
+    path_id: Optional[int] = None
+    metadata: dict = field(default_factory=dict)
+
+    def has_embedding(self) -> bool:
+        return self.embedding is not None
+
+    def to_dict(self) -> dict:
+        d = {
+            "text": self.text,
+            "role": self.role,
+            "step_index": self.step_index,
+            "session_id": self.session_id,
+            "model_name": self.model_name,
+            "timestamp": self.timestamp,
+            "path_id": self.path_id,
+            "metadata": self.metadata,
+        }
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TraceEntry":
+        return cls(
+            text=d["text"],
+            role=d["role"],
+            step_index=d["step_index"],
+            session_id=d["session_id"],
+            model_name=d.get("model_name"),
+            timestamp=d.get("timestamp"),
+            path_id=d.get("path_id"),
+            metadata=d.get("metadata", {}),
+        )
+
+
+@dataclass
+class TraceSession:
+    """An ordered collection of TraceEntry objects from one conversation.
+
+    Attributes:
+        session_id: Unique identifier for this session.
+        label: Human-readable label (e.g. "GPT-4o coding chat").
+        entries: Ordered list of conversation entries.
+        source_format: How the data was imported ("openai", "anthropic",
+                       "plain_text", "reasoning").
+        llm_model: The LLM that generated this conversation (optional).
+        created_at: Unix timestamp of import time.
+    """
+
+    session_id: str
+    label: str
+    entries: List[TraceEntry]
+    source_format: str
+    llm_model: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+
+    @property
+    def texts(self) -> List[str]:
+        return [e.text for e in self.entries]
+
+    @property
+    def roles(self) -> List[str]:
+        return [e.role for e in self.entries]
+
+    def embeddings_matrix(self) -> Optional[np.ndarray]:
+        """Return (N, D) array of embeddings, or None if not all entries are embedded."""
+        if not all(e.has_embedding() for e in self.entries):
+            return None
+        return np.array([e.embedding for e in self.entries])
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "label": self.label,
+            "entries": [e.to_dict() for e in self.entries],
+            "source_format": self.source_format,
+            "llm_model": self.llm_model,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TraceSession":
+        entries = [TraceEntry.from_dict(e) for e in d["entries"]]
+        return cls(
+            session_id=d["session_id"],
+            label=d["label"],
+            entries=entries,
+            source_format=d["source_format"],
+            llm_model=d.get("llm_model"),
+            created_at=d.get("created_at", 0.0),
+        )
+
+    def __len__(self) -> int:
+        return len(self.entries)

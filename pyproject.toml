@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracescope"
+version = "0.1.0"
+description = "LLM interpretability tool: embed, cluster, and visualize conversation traces in 3D"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "scikit-learn>=1.0",
+    "umap-learn>=0.5",
+    "metric-learn>=0.6",
+    "scipy>=1.7",
+    "ruptures>=1.1",
+    "chromadb>=0.4",
+    "plotly>=5.0",
+    "dash>=2.0",
+    "openai>=1.0",
+    "httpx>=0.24",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]
+anthropic = ["anthropic>=0.25"]
+gpu = ["vispy>=0.12", "PyOpenGL", "PyQt5>=5.15"]
+full = ["tracescope[gpu,torch,anthropic]"]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+include = ["tracescope*"]

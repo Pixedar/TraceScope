@@ -1,0 +1,287 @@
+"""
+3D scatter plot with Catmull-Rom spline paths — faithful port from Android.
+
+Features ported from My3DScatterRenderer.java:
+  - Catmull-Rom spline interpolation (20 samples/segment, exact b0-b3 coefficients)
+  - Android cluster color palette (10 colors)
+  - Dark background (#1E1E1E matching Android's glClearColor 0.12, 0.12, 0.12)
+  - Proper point sizing
+"""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+import numpy as np
+
+try:
+    import plotly.graph_objects as go
+except ImportError as _e:
+    raise ImportError(
+        "Visualization dependencies not installed. "
+        "Install them with: pip install plotly\n"
+        "Or install the full package: pip install tracescope"
+    ) from _e
+
+from tracescope.models.analysis import AnalysisResult
+
+
+# ═══════════════════════════════════════════════════
+# Android cluster palette (exact RGB from DashboardFragment.java line 2254)
+# ═══════════════════════════════════════════════════
+CLUSTER_COLORS = [
+    "rgb(255, 0, 0)",       # red
+    "rgb(0, 255, 0)",       # green
+    "rgb(0, 0, 255)",       # blue
+    "rgb(255, 255, 0)",     # yellow
+    "rgb(255, 0, 255)",     # magenta
+    "rgb(0, 255, 255)",     # cyan
+    "rgb(255, 128, 0)",     # orange
+    "rgb(128, 0, 255)",     # purple
+    "rgb(0, 128, 255)",     # sky blue
+    "rgb(128, 255, 128)",   # pastel green
+]
+
+# Hex versions for use where needed
+CLUSTER_COLORS_HEX = [
+    "#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF",
+    "#00FFFF", "#FF8000", "#8000FF", "#0080FF", "#80FF80",
+]
+
+
+def catmull_rom_spline(
+    points: np.ndarray,
+    samples_per_segment: int = 20,
+) -> np.ndarray:
+    """Catmull-Rom spline interpolation.
+
+    Exact coefficients from Android My3DScatterRenderer.java lines 414-456:
+        b0 = -0.5*t³ +     t² - 0.5*t
+        b1 =  1.5*t³ - 2.5*t² + 1
+        b2 = -1.5*t³ + 2.0*t² + 0.5*t
+        b3 =  0.5*t³ - 0.5*t²
+
+    Mirrors first/last control points for boundary handling.
+
+    Args:
+        points: (N, 3) array of control points.
+        samples_per_segment: Number of interpolated samples per segment (default 20).
+
+    Returns:
+        (M, 3) array of interpolated points.
+    """
+    N = len(points)
+    if N < 2:
+        return points.copy()
+    if N == 2:
+        # Simple linear interpolation
+        result = []
+        for j in range(samples_per_segment + 1):
+            t = j / samples_per_segment
+            result.append(points[0] * (1 - t) + points[1] * t)
+        return np.array(result)
+
+    # Mirror endpoints for boundary handling
+    # p_extended = [mirror_start, p0, p1, ..., pN-1, mirror_end]
+    mirror_start = 2 * points[0] - points[1]
+    mirror_end = 2 * points[-1] - points[-2]
+    extended = np.vstack([mirror_start, points, mirror_end])
+
+    result = []
+    # Iterate over segments: for each group of 4 consecutive points (p0, p1, p2, p3)
+    # the spline passes through p1 → p2
+    for seg in range(len(extended) - 3):
+        p0 = extended[seg]
+        p1 = extended[seg + 1]
+        p2 = extended[seg + 2]
+        p3 = extended[seg + 3]
+
+        for j in range(samples_per_segment):
+            t = j / samples_per_segment
+            t2 = t * t
+            t3 = t2 * t
+
+            # Catmull-Rom basis functions (exact Android coefficients)
+            b0 = -0.5 * t3 + t2 - 0.5 * t
+            b1 = 1.5 * t3 - 2.5 * t2 + 1.0
+            b2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t
+            b3 = 0.5 * t3 - 0.5 * t2
+
+            point = b0 * p0 + b1 * p1 + b2 * p2 + b3 * p3
+            result.append(point)
+
+    # Add the last point
+    result.append(extended[-2])  # Last original point
+
+    return np.array(result)
+
+
+def _apply_dark_theme(fig: go.Figure, axis_labels: List[str]) -> None:
+    """Apply dark theme matching Android's glClearColor(0.12, 0.12, 0.12)."""
+    bg_color = "rgb(30, 30, 30)"
+    grid_color = "rgb(60, 60, 60)"
+
+    axis_common = dict(
+        backgroundcolor=bg_color,
+        gridcolor=grid_color,
+        color="white",
+        showbackground=True,
+        zerolinecolor=grid_color,
+    )
+
+    fig.update_layout(
+        scene=dict(
+            bgcolor=bg_color,
+            xaxis=dict(title=axis_labels[0] if len(axis_labels) > 0 else "X", **axis_common),
+            yaxis=dict(title=axis_labels[1] if len(axis_labels) > 1 else "Y", **axis_common),
+            zaxis=dict(title=axis_labels[2] if len(axis_labels) > 2 else "Z", **axis_common),
+        ),
+        paper_bgcolor=bg_color,
+        plot_bgcolor=bg_color,
+        font=dict(color="white"),
+        legend=dict(font=dict(color="white")),
+    )
+
+
+def plot_clusters_3d(
+    result: AnalysisResult,
+    show_path: bool = True,
+    marker_size: int = 6,
+    path_width: int = 5,
+    use_spline: bool = True,
+) -> go.Figure:
+    """Create a 3D scatter plot with clusters colored and Catmull-Rom spline path.
+
+    Args:
+        result: AnalysisResult from the pipeline.
+        show_path: Whether to draw the conversation path.
+        marker_size: Size of scatter points.
+        path_width: Width of the path line.
+        use_spline: Use Catmull-Rom spline (True) or straight lines (False).
+
+    Returns:
+        Plotly Figure object.
+    """
+    fig = go.Figure()
+    pts = result.projected_3d
+    labels = result.clusters.labels
+    axis_labels = result.axis_info.labels
+    n_clusters = result.clusters.n_clusters
+
+    # Scatter points per cluster
+    for c in range(n_clusters):
+        mask = [i for i, l in enumerate(labels) if l == c]
+        if not mask:
+            continue
+        cluster_pts = pts[mask]
+        cluster_texts = [result.session.entries[i].text[:100] for i in mask]
+        cluster_roles = [result.session.entries[i].role for i in mask]
+
+        hover = [
+            f"[{role}] {text}..."
+            for role, text in zip(cluster_roles, cluster_texts)
+        ]
+
+        color = CLUSTER_COLORS[c % len(CLUSTER_COLORS)]
+        label = (
+            result.cluster_labels[c]
+            if c < len(result.cluster_labels)
+            else f"Cluster {c}"
+        )
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=cluster_pts[:, 0],
+                y=cluster_pts[:, 1],
+                z=cluster_pts[:, 2],
+                mode="markers",
+                marker=dict(size=marker_size, color=color, opacity=0.8),
+                name=label,
+                text=hover,
+                hoverinfo="text",
+            )
+        )
+
+    # Path line (Catmull-Rom spline or straight)
+    if show_path and len(pts) >= 2:
+        if use_spline:
+            spline_pts = catmull_rom_spline(pts, samples_per_segment=20)
+        else:
+            spline_pts = pts
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=spline_pts[:, 0],
+                y=spline_pts[:, 1],
+                z=spline_pts[:, 2],
+                mode="lines",
+                line=dict(color="rgba(255,255,255,0.7)", width=path_width),
+                name="Path",
+                showlegend=True,
+                hoverinfo="skip",
+            )
+        )
+
+    # Apply dark theme
+    _apply_dark_theme(fig, axis_labels)
+
+    fig.update_layout(
+        title="TraceScope: Conversation in Semantic Space",
+        showlegend=True,
+        margin=dict(l=0, r=0, t=40, b=0),
+    )
+
+    return fig
+
+
+def plot_multi_paths(
+    results: List[AnalysisResult],
+    labels: Optional[List[str]] = None,
+) -> go.Figure:
+    """Overlay multiple conversation paths in the same 3D space."""
+    fig = go.Figure()
+
+    for i, result in enumerate(results):
+        pts = result.projected_3d
+        label = labels[i] if labels and i < len(labels) else result.session.label
+        color = CLUSTER_COLORS[i % len(CLUSTER_COLORS)]
+
+        # Spline path
+        if len(pts) >= 2:
+            spline_pts = catmull_rom_spline(pts, samples_per_segment=20)
+        else:
+            spline_pts = pts
+
+        fig.add_trace(
+            go.Scatter3d(
+                x=spline_pts[:, 0],
+                y=spline_pts[:, 1],
+                z=spline_pts[:, 2],
+                mode="lines",
+                line=dict(color=color, width=4),
+                name=label,
+            )
+        )
+
+        # Add scatter points
+        fig.add_trace(
+            go.Scatter3d(
+                x=pts[:, 0],
+                y=pts[:, 1],
+                z=pts[:, 2],
+                mode="markers",
+                marker=dict(size=4, color=color, opacity=0.7),
+                name=f"{label} (points)",
+                showlegend=False,
+            )
+        )
+
+    axis_labels = results[0].axis_info.labels if results else ["X", "Y", "Z"]
+    _apply_dark_theme(fig, axis_labels)
+
+    fig.update_layout(
+        title="TraceScope: Multiple Conversation Paths",
+        showlegend=True,
+    )
+
+    return fig
