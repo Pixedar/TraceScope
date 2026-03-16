@@ -26,21 +26,18 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 ## Installation
 
 ```bash
-# Full install (API + visualization) — recommended
+# Full install — GPU renderer, MDN flow models, all LLM providers
 pip install tracescope
-
-# With GPU-accelerated 3D renderer
-pip install tracescope[gpu]
-
-# Everything (GPU + PyTorch flow models + Anthropic LLM support)
-pip install tracescope[full]
 ```
 
-**API-only** (no visualization dependencies):
+**Lighter variants** (use `--no-deps` to skip the full dependency tree):
 
 ```bash
-pip install --no-deps tracescope
-pip install -r requirements-api.txt
+# CPU-only — renderer + all features, no PyTorch (RBF flow still works)
+pip install --no-deps tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
+
+# API-only — analysis pipeline, no GUI, no PyTorch
+pip install --no-deps tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
 You'll need an OpenAI API key for embeddings and LLM explanations. Set it in a `.env` file or pass it directly:

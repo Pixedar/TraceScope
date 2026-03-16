@@ -12,4 +12,3 @@ anthropic>=0.25
 vispy>=0.12
 PyOpenGL
 PyQt5>=5.15
-torch>=2.0

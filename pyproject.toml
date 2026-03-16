@@ -5,29 +5,62 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tracescope"
 version = "0.1.0"
-description = "LLM interpretability tool: embed, cluster, and visualize conversation traces in 3D"
+description = "Embed, cluster, and visualize any text collection in 3D semantic space with learned flow fields"
+readme = "README.md"
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 requires-python = ">=3.9"
+authors = [
+    {name = "Wiktor Tomasik"},
+]
+keywords = [
+    "llm", "interpretability", "embeddings", "visualization", "3d",
+    "semantic", "clustering", "flow-field", "nlp", "umap",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+# Default: everything — GPU renderer, flow models, LLM providers
 dependencies = [
+    # Core ML
     "numpy>=1.21",
     "scikit-learn>=1.0",
     "umap-learn>=0.5",
     "metric-learn>=0.6",
     "scipy>=1.7",
     "ruptures>=1.1",
+    # Storage
     "chromadb>=0.4",
-    "plotly>=5.0",
-    "dash>=2.0",
+    # LLM / embeddings
     "openai>=1.0",
     "httpx>=0.24",
     "pydantic>=2.0",
+    "anthropic>=0.25",
+    # GPU renderer
+    "vispy>=0.12",
+    "PyOpenGL",
+    "PyQt5>=5.15",
+    # Flow models (MDN)
+    "torch>=2.0",
 ]
 
 [project.optional-dependencies]
-torch = ["torch>=2.0"]
-anthropic = ["anthropic>=0.25"]
-gpu = ["vispy>=0.12", "PyOpenGL", "PyQt5>=5.15"]
-full = ["tracescope[gpu,torch,anthropic]"]
 dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.urls]
+Homepage = "https://pixedar.github.io/"
+Repository = "https://github.com/Pixedar/TraceScope"
+Issues = "https://github.com/Pixedar/TraceScope/issues"
 
 [tool.setuptools.packages.find]
 include = ["tracescope*"]
