@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from openai import OpenAI
-
 
 class LLMProvider(ABC):
     """Abstract base class for LLM interpretation providers."""
@@ -33,6 +31,7 @@ class OpenAILLM(LLMProvider):
     """OpenAI chat completions (GPT-5-mini, GPT-4o, etc.)."""
 
     def __init__(self, api_key: str, model: str = "gpt-5-mini"):
+        from openai import OpenAI
         self._model = model
         self._client = OpenAI(api_key=api_key)
 

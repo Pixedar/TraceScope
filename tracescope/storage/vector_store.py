@@ -7,10 +7,13 @@ can be embedded with different models and compared.
 
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 import numpy as np
 import chromadb
+
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
@@ -80,11 +83,12 @@ class VectorStore:
         col_name = self._collection_name(session_id, model_name)
         try:
             collection = self._client.get_collection(name=col_name)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Collection not found: {col_name}: {e}")
             return None
 
         result = collection.get(include=["embeddings"])
-        if not result["embeddings"]:
+        if result["embeddings"] is None or len(result["embeddings"]) == 0:
             return None
         return np.array(result["embeddings"], dtype=np.float32)
 
@@ -107,13 +111,13 @@ class VectorStore:
         col_name = self._collection_name(session_id, model_name)
         try:
             self._client.delete_collection(name=col_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to delete collection {col_name}: {e}")
 
     def clear_all(self):
         """Delete all stored embedding collections."""
         for col in self._client.list_collections():
             try:
                 self._client.delete_collection(name=col.name)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to delete collection {col.name}: {e}")

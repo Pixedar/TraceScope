@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None):
+def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_k=3):
     # build & normalize
     matrix = np.array(embedding_list, dtype=float)
     matrix = matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
@@ -62,11 +62,11 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None):
         else:
             # no feedback → original silhouette-only loop
             best_score = -1
-            best_k = 3#TODO
+            best_k = min_k
             best_labels = None
             best_centroids = None
 
-            for k in range(3, max_k + 1): #TODO
+            for k in range(min_k, max_k + 1):
                 logger.info(f"Trying k={k}")
                 km = KMeans(n_clusters=k, init='k-means++', random_state=42)
                 lbl = km.fit_predict(matrix)
@@ -120,7 +120,7 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None):
         "labels": labels.tolist(),
     }
 
-def main(embeddings_json, n_clusters=None, aspect=None, user_clusters=None, compute_moving=False):
+def main(embeddings_json, n_clusters=None, aspect=None, user_clusters=None, compute_moving=False, min_k=3):
     # Load all embeddings directly from JSON
     embedding_list = json.loads(embeddings_json)
 
@@ -151,7 +151,7 @@ def main(embeddings_json, n_clusters=None, aspect=None, user_clusters=None, comp
     # ────────────────────────────────────────────────────────────────────────
 
     # Cluster them (no deduplication or pruning)
-    result = cluster_embeddings(embedding_list, n_clusters, user_clusters=user_clusters)
+    result = cluster_embeddings(embedding_list, n_clusters, user_clusters=user_clusters, min_k=min_k)
     # print("RESULT:", result)
 
     # ── Optional moving‐average “closeness” to each cluster ──

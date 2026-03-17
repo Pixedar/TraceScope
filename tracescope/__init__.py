@@ -58,7 +58,7 @@ def launch_renderer(*args, **kwargs):
     return _launch(*args, **kwargs)
 
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "TraceScopeConfig",
@@ -71,6 +71,5 @@ __all__ = [
     "from_lists",
     "AnalysisPipeline",
     "TraceQuery",
-    "launch_dashboard",
     "launch_renderer",
 ]

@@ -301,7 +301,7 @@ launch_renderer(result, explainer=pipeline.explainer)
 
 **GUI panels** (left sidebar):
 - **Flow Controls** — flow animation and ball/probe toggle
-- **Display** — data points, path visibility, simple lines toggle, info overlay
+- **Display** — data points, path visibility, spline path toggle, info overlay
 - **Probe** — X/Y/Z sliders, mark/clear control points, Explain button
 - **Clusters** — color-coded legend with cluster descriptions
 - **Flow Settings** — particle opacity, speed multiplier, particle count slider, entropy coloring
@@ -319,6 +319,7 @@ config = TraceScopeConfig(
     embedding_model="text-embedding-3-large",  # or "text-embedding-3-small"
     embedding_provider_type="openai",
     llm_model="gpt-5-mini",          # for axis/cluster labeling
+    llm_model_complex="gpt-5.4",    # for explanations (explain button, path explain)
     llm_provider_type="openai",      # or "anthropic"
     storage_dir="~/.tracescope",     # where embeddings and caches are stored
     cache_enabled=True,              # cache LLM responses and ML results
@@ -383,7 +384,7 @@ The cache uses a SHA-256 fingerprint of sorted texts + embedding model name. If 
 The `analyze()` method runs these steps:
 
 1. **Embed** — Convert texts to high-dimensional vectors (OpenAI text-embedding-3-large, 3072D)
-2. **Cluster** — Auto-select k via silhouette scoring, KMeans with k-means++
+2. **Cluster** — Auto-select k via silhouette scoring, KMeans with k-means++ (configurable `min_k`, default 3)
 3. **Reduce to 3D** — UMAP/tSNE grid search with cosine metric, pick best silhouette
 4. **Compute axes** — PCA on projected coordinates
 5. **Label axes** — LLM generates 2-word semantic labels using TF-IDF keyword evolution

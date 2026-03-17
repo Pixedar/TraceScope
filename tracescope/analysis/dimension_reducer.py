@@ -117,7 +117,7 @@ def reduce_embeddings(embedding_list, target_dim=2, n_neighbors=None, method=Non
                 perp = min(30, n_samples-1)
                 logger.warning(f"UMAP failed ({e}), falling back to TSNE 3D")
 
-                logger.info(f"oryginal matrix  on dtype={matrix.dtype}, shape={matrix.shape}")
+                logger.info(f"original matrix dtype={matrix.dtype}, shape={matrix.shape}")
 
                 clean_matrix = np.asarray(matrix, dtype=np.float64)
                 logger.info(f"TSNE ▶ about to run on dtype={clean_matrix.dtype}, shape={clean_matrix.shape}")
@@ -238,7 +238,8 @@ def optimize_reduction(embeddings_json,
 
 
                 score_umap = silhouette_score(um, cluster_labels)
-            except:
+            except Exception as e:
+                logger.debug(f"UMAP failed for param={param}: {e}")
                 um, score_umap, um_reducer = None, -1, None
 
             # TSNE
@@ -253,7 +254,8 @@ def optimize_reduction(embeddings_json,
                     random_state=42
                 ).fit_transform(clean_matrix)
                 score_tsne = silhouette_score(ts, cluster_labels)
-            except:
+            except Exception as e:
+                logger.debug(f"TSNE failed for param={param}: {e}")
                 ts, score_tsne = None, -1
 
             logger.info(f" param={param} ▶ umap={score_umap:.4f}  tsne={score_tsne:.4f}")
@@ -286,7 +288,8 @@ def optimize_reduction(embeddings_json,
                     )
                     um = um_reducer.fit_transform(Xα)
                     score_umap = silhouette_score(um, cluster_labels)
-                except:
+                except Exception as e:
+                    logger.debug(f"UMAP failed for param={param}, alpha={alpha}: {e}")
                     um, score_umap, um_reducer = None, -1, None
 
                 # TSNE
@@ -300,7 +303,8 @@ def optimize_reduction(embeddings_json,
                         random_state=42
                     ).fit_transform(Xα)
                     score_tsne = silhouette_score(ts, cluster_labels)
-                except:
+                except Exception as e:
+                    logger.debug(f"TSNE failed for param={param}, alpha={alpha}: {e}")
                     ts, score_tsne = None, -1
 
                 logger.info(f" param={param} ▶ umap={score_umap:.4f}  tsne={score_tsne:.4f}")
@@ -350,9 +354,6 @@ def main3D(embeddings_json, n_neighbors=None, method=None):
 
 
 
-import json
-import numpy as np
-
 def compute_axes_info(embeddings_json: str, cluster_labels_json: str) -> str:
     """
     Now returns standard XYZ axes; computes lengths/extremes along first 3 dims.
@@ -386,10 +387,6 @@ def compute_axes_info(embeddings_json: str, cluster_labels_json: str) -> str:
     }
     return json.dumps(result)
 
-
-import numpy as np
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
 
 def compute_axes(points):
     """

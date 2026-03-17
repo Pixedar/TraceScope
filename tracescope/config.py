@@ -68,8 +68,10 @@ class TraceScopeConfig:
         embedding_model: Name of the embedding model to use.
                          Default: "text-embedding-3-large" (OpenAI).
         embedding_provider_type: Provider type: "openai", "cohere", "huggingface".
-        llm_model: Name of the LLM model for interpretation.
-                   Default: "gpt-4o" (OpenAI).
+        llm_model: Name of the LLM model for simpler tasks (axis/cluster labeling).
+                   Default: "gpt-5-mini" (OpenAI).
+        llm_model_complex: Name of the LLM model for complex tasks (explanations).
+                   Default: "gpt-5.4" (OpenAI).
         llm_provider_type: Provider type: "openai", "anthropic".
         storage_dir: Directory for persistent storage (ChromaDB, cache).
                      Default: ~/.tracescope
@@ -88,6 +90,7 @@ class TraceScopeConfig:
     embedding_model: str = "text-embedding-3-large"
     embedding_provider_type: str = "openai"
     llm_model: str = "gpt-5-mini"
+    llm_model_complex: str = "gpt-5.4"
     llm_provider_type: str = "openai"
     storage_dir: str = field(default_factory=lambda: str(Path.home() / ".tracescope"))
     cache_enabled: bool = True
@@ -120,20 +123,29 @@ class TraceScopeConfig:
         else:
             raise ValueError(f"Unknown embedding provider: {self.embedding_provider_type}")
 
-    def create_llm_provider(self):
-        """Factory: create an LLMProvider based on config."""
+    def create_llm_provider(self, model_override: Optional[str] = None):
+        """Factory: create an LLMProvider based on config.
+
+        Args:
+            model_override: If given, use this model instead of llm_model.
+        """
         from tracescope.providers.llm import OpenAILLM, AnthropicLLM
 
+        model = model_override or self.llm_model
         if self.llm_provider_type == "openai":
             if not self.openai_api_key:
                 raise ValueError("openai_api_key required for OpenAI LLM")
-            return OpenAILLM(api_key=self.openai_api_key, model=self.llm_model)
+            return OpenAILLM(api_key=self.openai_api_key, model=model)
         elif self.llm_provider_type == "anthropic":
             if not self.anthropic_api_key:
                 raise ValueError("anthropic_api_key required for Anthropic LLM")
-            return AnthropicLLM(api_key=self.anthropic_api_key, model=self.llm_model)
+            return AnthropicLLM(api_key=self.anthropic_api_key, model=model)
         else:
             raise ValueError(f"Unknown LLM provider: {self.llm_provider_type}")
+
+    def create_llm_provider_complex(self):
+        """Factory: create an LLMProvider using the complex model (for explanations)."""
+        return self.create_llm_provider(model_override=self.llm_model_complex)
 
     @property
     def chromadb_dir(self) -> str:

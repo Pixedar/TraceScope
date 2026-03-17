@@ -107,10 +107,13 @@ class AnalysisPipeline:
         self.config = config
         self._embedding_provider: EmbeddingProvider = config.create_embedding_provider()
         self._llm_provider: LLMProvider = config.create_llm_provider()
+        self._llm_provider_complex: LLMProvider = config.create_llm_provider_complex()
         self._vector_store = VectorStore(config.chromadb_dir)
         self._cache = LLMResponseCache(config.cache_db_path, config.cache_enabled)
         self._result_cache = ResultCache(config.cache_db_path, config.cache_enabled)
+        # Simple model for labeling, complex model for explanations
         self._explainer = SemanticExplainer(self._llm_provider, self._cache)
+        self._explainer_complex = SemanticExplainer(self._llm_provider_complex, self._cache)
 
     @property
     def embedding_provider(self) -> EmbeddingProvider:
@@ -131,7 +134,8 @@ class AnalysisPipeline:
 
     @property
     def explainer(self) -> SemanticExplainer:
-        return self._explainer
+        """Explainer using the complex model (for rich explanations)."""
+        return self._explainer_complex
 
     def analyze(
         self,
@@ -146,6 +150,7 @@ class AnalysisPipeline:
         cache_path: Optional[str] = None,
         rbf_kernel: str = "thin_plate_spline",
         rbf_smoothing: float = 0.1,
+        min_k: int = 3,
     ) -> AnalysisResult:
         """Run the full analysis pipeline.
 
@@ -168,10 +173,21 @@ class AnalysisPipeline:
             rbf_kernel: RBF kernel type (default "thin_plate_spline"). Options:
                 "thin_plate_spline", "multiquadric", "cubic", "linear", "gaussian".
             rbf_smoothing: RBF regularization (default 0.1). 0 = exact interpolation.
+            min_k: Minimum number of clusters for auto-selection (default 3).
+                The silhouette search starts from this value. Range: 2-10.
 
         Returns:
             AnalysisResult with all computed data.
         """
+
+        # ── Input validation ─────────────────────────────────────────
+        if len(session) == 0:
+            raise ValueError("Session has no entries. Provide at least 3 texts.")
+        if len(session) < 3:
+            raise ValueError(
+                f"Need at least 3 entries for analysis, got {len(session)}. "
+                f"Clustering and dimension reduction require a minimum sample size."
+            )
 
         # ── Check full-result cache ───────────────────────────────────
         if cache_path is not None:
@@ -246,7 +262,7 @@ class AnalysisPipeline:
         else:
             embeddings_json = json.dumps(embeddings.tolist())
             cluster_result_json = cluster_main(
-                embeddings_json, n_clusters=n_clusters
+                embeddings_json, n_clusters=n_clusters, min_k=min_k
             )
             cluster_raw = json.loads(cluster_result_json)
             self._result_cache.put_result(

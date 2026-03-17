@@ -15,12 +15,15 @@ chatbot conversations, news headlines, research abstracts, log entries, etc.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 import time
 from pathlib import Path
 from typing import List, Optional, Union
 
 from tracescope.models.trace import TraceEntry, TraceSession
+
+logger = logging.getLogger(__name__)
 
 
 def _make_session_id() -> str:
@@ -224,11 +227,16 @@ def from_list(
     Returns:
         TraceSession ready for the analysis pipeline.
     """
+    if not texts:
+        raise ValueError("texts list is empty — provide at least 1 text")
+
     sid = session_id or _make_session_id()
     entries = []
+    skipped = 0
     for i, text in enumerate(texts):
         text = text.strip() if isinstance(text, str) else str(text).strip()
         if not text:
+            skipped += 1
             continue
         entries.append(
             TraceEntry(
@@ -238,6 +246,9 @@ def from_list(
                 session_id=sid,
             )
         )
+
+    if skipped > 0:
+        logger.warning(f"Skipped {skipped} empty string(s) out of {len(texts)} inputs")
 
     return TraceSession(
         session_id=sid,
@@ -275,6 +286,12 @@ def from_lists(
             ["Climate summit", "Quantum computing", "Mars rover update"],
         ])
     """
+    if not paths:
+        raise ValueError("paths list is empty — provide at least 1 path")
+    for i, p in enumerate(paths):
+        if not p:
+            raise ValueError(f"Path {i} is empty — every path must have at least 1 text")
+
     sid = session_id or _make_session_id()
     entries: List[TraceEntry] = []
 
