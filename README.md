@@ -4,7 +4,7 @@
   <img src="docs/assets/demo_v_3.gif" alt="TraceScope demo animation" width="950">
 </p>
 
-**TraceScope maps the flow of meaning**  
+**TraceScope maps the flow of meaning**
 Embed, cluster, and visualize any collection of texts in 3D semantic space — then learn a continuous semantic flow field over that space, so you can see not just where texts are, but how meaning tends to move between them.
 
 TraceScope builds a rich semantic map from your data — with labeled axes, named clusters, trajectories, and a trained flow model that reveals how themes, intent, style, or reasoning evolve across time.
@@ -23,6 +23,7 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 - **Semantic dynamics** — model trajectories and learn a continuous flow field over sparse text sequences
 - **Interpretability** — inspect how a conversation, system, or dataset drifts, stabilizes, loops, or transitions
 - **Integration** — use the same semantic space programmatically through a lightweight query API
+
 ## Installation
 
 ```bash
@@ -56,49 +57,51 @@ from tracescope import TraceScopeConfig, AnalysisPipeline, auto_import
 config = TraceScopeConfig(embedding_model="text-embedding-3-large")
 session = auto_import("conversation.json")
 pipeline = AnalysisPipeline(config)
-result = pipeline.analyze(session, train_flow=True)
+result = pipeline.analyze(session, train_flow=True, cache_path="cache/conversation")
 
 print(f"Axes: {result.axis_info.labels}")
 print(f"Clusters: {result.cluster_labels}")
-
-# Save result for instant re-use (skips entire pipeline on next run)
-result.save_result("my_analysis")
-
-# Next time: loads instantly if data hasn't changed
-result = pipeline.analyze(session, cache_path="my_analysis")
 ```
 
 ### Analyze any list of texts
-Turn any ordered text collection into a semantic trajectory to reveal recurring human states, emotional patterns, behavioral loops, and emerging trends over time
+Turn any ordered text collection into a semantic trajectory — works best with **20+ entries** for meaningful clusters and flow fields.
 ```python
 from tracescope import TraceScopeConfig, AnalysisPipeline, from_list
 
 config = TraceScopeConfig()
 
-# News headlines
+# News headlines (short example — add more entries for richer flow)
 session = from_list([
     "Fed holds rates steady amid inflation concerns",
     "Tech earnings surge on AI demand",
     "Climate summit reaches carbon emissions deal",
     "Housing market cools as mortgage rates rise",
     "Quantum computing startup hits milestone",
-], label="Tech & Finance News")
+    # ... add more entries for better flow field quality
+])
 
-# Research abstracts, product reviews, log entries — anything works
 pipeline = AnalysisPipeline(config)
-result = pipeline.analyze(session, train_flow=True)
+result = pipeline.analyze(session, train_flow=True, cache_path="cache/headlines")
 ```
+
+> **Tip:** The MDN flow model learns best from **20+ entries** across your paths. With only 5–10 entries the flow field will be sparse. For the richest visualizations, use datasets with 50+ texts or multiple paths via `from_lists()`.
 
 ### Visualize
 
+The included `sample_data/prm_demo_40paths.json` contains 55 math reasoning chains from the PRM800K dataset — a good example of visualizing the semantic flow of step-by-step mathematical problem solving across diverse problem types.
+
 ```python
-from tracescope import launch_renderer
+from tracescope import (
+    TraceScopeConfig, AnalysisPipeline, auto_import, launch_renderer,
+)
+
+config = TraceScopeConfig(embedding_model="text-embedding-3-large")
+session = auto_import("sample_data/prm_demo_40paths.json")
+pipeline = AnalysisPipeline(config)
+result = pipeline.analyze(session, train_flow=True, cache_path="cache/prm_demo")
 
 # Interactive 3D renderer with flow field animation
 # Controls: Space=flow, B=ball, P=points, A=auto-rotate, +/-=size
-launch_renderer(result)
-
-# With LLM explanations (Explain button in the GUI)
 launch_renderer(result, explainer=pipeline.explainer)
 ```
 
@@ -111,6 +114,7 @@ TraceScope accepts data in multiple formats:
 ```python
 from tracescope import from_list
 
+# label is optional — useful for identifying the session in multi-session workflows
 session = from_list(["text one", "text two", "text three"], label="My texts")
 ```
 
@@ -124,13 +128,15 @@ from tracescope import TraceScopeConfig, AnalysisPipeline, from_lists
 config = TraceScopeConfig()
 pipeline = AnalysisPipeline(config)
 
+# labels is optional — names each path for display purposes
 session = from_lists([
     ["Fed holds rates steady", "Tech earnings surge on AI", "Housing market cools"],
     ["Climate summit reaches deal", "Quantum computing milestone", "Mars rover update"],
     ["New vaccine approved", "Hospital staffing crisis", "Mental health funding"],
+    # ... more paths improve flow field quality
 ], labels=["Finance", "Science", "Health"])
 
-result = pipeline.analyze(session, train_flow=True)
+result = pipeline.analyze(session, train_flow=True, cache_path="cache/multi_path")
 ```
 
 ### From file — auto-detected format
@@ -159,18 +165,23 @@ Supported JSON formats:
 }
 ```
 
-**OpenAI chat format**:
+<details>
+<summary><strong>OpenAI chat format</strong></summary>
+
 ```json
 {
-  "model": "gpt-4o",
+  "model": "gpt-5",
   "messages": [
     {"role": "user", "content": "Hello"},
     {"role": "assistant", "content": "Hi there!"}
   ]
 }
 ```
+</details>
 
-**Anthropic format**:
+<details>
+<summary><strong>Anthropic format</strong></summary>
+
 ```json
 {
   "model": "claude-sonnet-4-20250514",
@@ -180,6 +191,7 @@ Supported JSON formats:
   ]
 }
 ```
+</details>
 
 **Plain text** (`.txt` files, split on blank lines):
 ```
@@ -319,7 +331,7 @@ config = TraceScopeConfig(
     embedding_model="text-embedding-3-large",  # or "text-embedding-3-small"
     embedding_provider_type="openai",
     llm_model="gpt-5-mini",          # for axis/cluster labeling
-    llm_model_complex="gpt-5.4",    # for explanations (explain button, path explain)
+    llm_model_complex="gpt-5",       # for explanations (explain button, path explain)
     llm_provider_type="openai",      # or "anthropic"
     storage_dir="~/.tracescope",     # where embeddings and caches are stored
     cache_enabled=True,              # cache LLM responses and ML results
@@ -333,6 +345,12 @@ config = TraceScopeConfig(
     rbf_smoothing=0.1,               # RBF regularization (0 = exact)
 )
 ```
+
+> **Model override:** For the highest quality labels and explanations, set both models to `gpt-5`:
+> ```python
+> config = TraceScopeConfig(llm_model="gpt-5", llm_model_complex="gpt-5")
+> ```
+> You can use any OpenAI chat model — just pass its name to `llm_model` / `llm_model_complex`.
 
 ### Flow Models
 

@@ -5,7 +5,7 @@ Demonstrates the TraceQuery API for querying the semantic space
 without the visualization GUI. Shows both single-path and multi-path usage.
 
 Before running:
-  1. pip install -e .
+  1. pip install tracescope    (or pip install -e . from repo root)
   2. Put your OpenAI API key in .env at project root:
      OPENAI_API_KEY=sk-...
 """
@@ -21,7 +21,6 @@ def single_path_api():
 
     config = TraceScopeConfig(
         embedding_model="text-embedding-3-large",
-        llm_model="gpt-5-mini",
     )
 
     session = from_list([
@@ -35,7 +34,7 @@ def single_path_api():
         "Yes, use aiofiles: async with aiofiles.open('file.txt') as f: data = await f.read()",
         "What about reading from URLs?",
         "Use the requests library: response = requests.get(url); data = response.text",
-    ], label="Python file I/O conversation")
+    ])
 
     print(f"Imported {len(session)} entries")
 
@@ -44,6 +43,7 @@ def single_path_api():
         session,
         progress_callback=lambda stage, pct: print(f"  [{stage}] {pct*100:.0f}%"),
         train_flow=True,
+        cache_path="cache/api_single",
     )
 
     query = TraceQuery(result, pipeline.embedding_provider, pipeline.explainer)
@@ -57,10 +57,10 @@ def multi_path_api():
 
     config = TraceScopeConfig(
         embedding_model="text-embedding-3-large",
-        llm_model="gpt-5-mini",
     )
 
     # Three independent paths → unified semantic space
+    # labels is optional — names each path for display
     session = from_lists([
         [
             "How do I read a file in Python?",
@@ -85,13 +85,13 @@ def multi_path_api():
     print(f"Imported {len(session)} entries across 3 paths")
 
     pipeline = AnalysisPipeline(config)
-    result = pipeline.analyze(session, train_flow=True)
+    result = pipeline.analyze(session, train_flow=True, cache_path="cache/api_multi")
 
     query = TraceQuery(result, pipeline.embedding_provider, pipeline.explainer)
     _run_queries(query)
 
 
-def _run_queries(query: TraceQuery):
+def _run_queries(query: "TraceQuery"):
     """Run all four query methods on a TraceQuery instance."""
 
     # ── Get the lookup table (cached metadata about the space) ────────

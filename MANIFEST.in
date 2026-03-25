@@ -3,3 +3,4 @@ include README.md
 include requirements.txt
 include requirements-api.txt
 include requirements-cpu.txt
+recursive-include sample_data *.json

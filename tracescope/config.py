@@ -71,7 +71,7 @@ class TraceScopeConfig:
         llm_model: Name of the LLM model for simpler tasks (axis/cluster labeling).
                    Default: "gpt-5-mini" (OpenAI).
         llm_model_complex: Name of the LLM model for complex tasks (explanations).
-                   Default: "gpt-5.4" (OpenAI).
+                   Default: "gpt-5" (OpenAI).
         llm_provider_type: Provider type: "openai", "anthropic".
         storage_dir: Directory for persistent storage (ChromaDB, cache).
                      Default: ~/.tracescope
@@ -90,7 +90,7 @@ class TraceScopeConfig:
     embedding_model: str = "text-embedding-3-large"
     embedding_provider_type: str = "openai"
     llm_model: str = "gpt-5-mini"
-    llm_model_complex: str = "gpt-5.4"
+    llm_model_complex: str = "gpt-5"
     llm_provider_type: str = "openai"
     storage_dir: str = field(default_factory=lambda: str(Path.home() / ".tracescope"))
     cache_enabled: bool = True

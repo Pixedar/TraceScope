@@ -162,6 +162,9 @@ class FlowFieldSystem:
     #   the per-axis span. Increase for a looser blob, decrease for tighter.
     #   Located here for easy tuning.
     BLOB_RADIUS = 0.04
+    # For sparse data (few path points), use a larger radius so particles
+    # actually envelop the paths instead of forming a tiny pocket.
+    BLOB_RADIUS_SPARSE = 0.12
 
     def _build_path_mask(self, path_points: np.ndarray):
         """Build a 3D boolean occupancy grid from path sample points.
@@ -176,7 +179,8 @@ class FlowFieldSystem:
         """
         res = self.BLOB_RESOLUTION
         self._mask_res = res
-        radius_frac = self.BLOB_RADIUS
+        # Use larger radius for sparse data so particles envelop the paths
+        radius_frac = self.BLOB_RADIUS_SPARSE if len(path_points) < 80 else self.BLOB_RADIUS
 
         pp = np.asarray(path_points, dtype=np.float32)
 

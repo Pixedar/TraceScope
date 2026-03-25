@@ -574,8 +574,21 @@ def train_models(cloud_json:str, mode:str="static", path_ids=None, **kwargs):
     if path_ids is not None and mode == "mdn":
         call_kwargs["path_ids"] = path_ids
     _state.update(_MODE_FNS[mode](pts, **call_kwargs))
-    return json.dumps({"axis_min": _state["axis_min"].tolist(),
-                       "axis_max": _state["axis_max"].tolist()})
+
+    # Expand bounds with margin so particles have room around the data.
+    # RBF already applies 10% internally; MDN/GPVF return exact data bounds.
+    # Use a larger margin for small datasets where the span is tiny.
+    a_min = np.asarray(_state["axis_min"], dtype=np.float32)
+    a_max = np.asarray(_state["axis_max"], dtype=np.float32)
+    span = a_max - a_min
+    margin = 0.15 if len(pts) < 20 else 0.10
+    a_min = a_min - margin * span
+    a_max = a_max + margin * span
+    _state["axis_min"] = a_min
+    _state["axis_max"] = a_max
+
+    return json.dumps({"axis_min": a_min.tolist(),
+                       "axis_max": a_max.tolist()})
 
 # for slider coupling (only “static” model supports it)
 def predict_axis(axis:str, a1:float, a2:float):

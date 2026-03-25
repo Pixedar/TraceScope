@@ -1,17 +1,31 @@
 """
 TraceScope – Compare Embedding Models
 
-Demonstrates analyzing the same conversation with two different
+Demonstrates analyzing the same data with two different
 embedding models and comparing their vector spaces.
+
+Before running:
+  1. pip install tracescope    (or pip install -e . from repo root)
+  2. Put your OpenAI API key in .env at project root:
+     OPENAI_API_KEY=sk-...
 """
 
-from tracescope import TraceScopeConfig, AnalysisPipeline, auto_import
+from tracescope import TraceScopeConfig, AnalysisPipeline, from_list
 from tracescope.providers.embedding import OpenAIEmbedding
 
 
 def main():
     config = TraceScopeConfig()
-    session = auto_import("sample_data/sample_conversation.json")
+
+    session = from_list([
+        "How do I read a file in Python?",
+        "You can use open() with a context manager.",
+        "What about writing to files?",
+        "Use open() with 'w' mode.",
+        "How do I handle binary files?",
+        "Use 'rb' or 'wb' mode for binary.",
+    ])
+
     pipeline = AnalysisPipeline(config)
 
     # Analyze with model A
@@ -20,7 +34,7 @@ def main():
         api_key=config.openai_api_key,
         model="text-embedding-3-large",
     )
-    result_a = pipeline.analyze(session, train_flow=False)
+    result_a = pipeline.analyze(session, train_flow=False, cache_path="cache/cmp_large")
     print(f"  Clusters: {result_a.cluster_labels}")
     print(f"  Axes: {result_a.axis_info.labels}")
 
@@ -30,7 +44,7 @@ def main():
         api_key=config.openai_api_key,
         model="text-embedding-3-small",
     )
-    result_b = pipeline.analyze(session, train_flow=False)
+    result_b = pipeline.analyze(session, train_flow=False, cache_path="cache/cmp_small")
     print(f"  Clusters: {result_b.cluster_labels}")
     print(f"  Axes: {result_b.axis_info.labels}")
 
@@ -45,14 +59,6 @@ def main():
     print(f"  Mean cosine similarity: {comparison['mean_cosine_similarity']:.4f}")
     print(f"  Min cosine similarity: {comparison['min_cosine_similarity']:.4f}")
     print(f"  Max cosine similarity: {comparison['max_cosine_similarity']:.4f}")
-
-    # Compare side by side
-    from tracescope.visualization.scatter3d import plot_multi_paths
-    fig = plot_multi_paths(
-        [result_a, result_b],
-        labels=["text-embedding-3-large", "text-embedding-3-small"],
-    )
-    fig.show()
 
 
 if __name__ == "__main__":

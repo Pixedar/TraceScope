@@ -14,14 +14,23 @@ from typing import List, Optional
 
 import numpy as np
 
-try:
-    import plotly.graph_objects as go
-except ImportError as _e:
-    raise ImportError(
-        "Visualization dependencies not installed. "
-        "Install them with: pip install plotly\n"
-        "Or install the full package: pip install tracescope"
-    ) from _e
+# Plotly is only needed for the plotting functions, not for catmull_rom_spline.
+# Defer import so gl_renderer can import catmull_rom_spline without plotly.
+go = None  # lazy-loaded
+
+def _require_plotly():
+    global go
+    if go is not None:
+        return
+    try:
+        import plotly.graph_objects as _go
+        go = _go
+    except ImportError as _e:
+        raise ImportError(
+            "Visualization dependencies not installed. "
+            "Install them with: pip install plotly\n"
+            "Or install the full package: pip install tracescope"
+        ) from _e
 
 from tracescope.models.analysis import AnalysisResult
 
@@ -116,7 +125,7 @@ def catmull_rom_spline(
     return np.array(result)
 
 
-def _apply_dark_theme(fig: go.Figure, axis_labels: List[str]) -> None:
+def _apply_dark_theme(fig, axis_labels: List[str]) -> None:
     """Apply dark theme matching Android's glClearColor(0.12, 0.12, 0.12)."""
     bg_color = "rgb(30, 30, 30)"
     grid_color = "rgb(60, 60, 60)"
@@ -149,7 +158,7 @@ def plot_clusters_3d(
     marker_size: int = 6,
     path_width: int = 5,
     use_spline: bool = True,
-) -> go.Figure:
+):
     """Create a 3D scatter plot with clusters colored and Catmull-Rom spline path.
 
     Args:
@@ -162,6 +171,7 @@ def plot_clusters_3d(
     Returns:
         Plotly Figure object.
     """
+    _require_plotly()
     fig = go.Figure()
     pts = result.projected_3d
     labels = result.clusters.labels
@@ -237,8 +247,9 @@ def plot_clusters_3d(
 def plot_multi_paths(
     results: List[AnalysisResult],
     labels: Optional[List[str]] = None,
-) -> go.Figure:
+):
     """Overlay multiple conversation paths in the same 3D space."""
+    _require_plotly()
     fig = go.Figure()
 
     for i, result in enumerate(results):
