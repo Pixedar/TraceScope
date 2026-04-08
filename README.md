@@ -99,17 +99,19 @@ python examples/swe_agent.py
 
 ```bash
 # Full install — GPU renderer, MDN flow models, all LLM providers
-pip install tracescope
+pip install --pre tracescope
 ```
+
+> **Note:** TraceScope is currently in alpha (`0.2.0a1`). The `--pre` flag is required to install pre-release versions.
 
 **Lighter variants** (use `--no-deps` to skip the full dependency tree):
 
 ```bash
 # CPU-only — renderer + all features, no PyTorch (RBF flow still works)
-pip install --no-deps tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
+pip install --no-deps --pre tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
 
 # API-only — analysis pipeline, no GUI, no PyTorch
-pip install --no-deps tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
+pip install --no-deps --pre tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
 You'll need an OpenAI API key for embeddings and LLM explanations. Set it in a `.env` file or pass it directly:
