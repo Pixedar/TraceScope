@@ -24,7 +24,7 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 - **Interpretability** — inspect how a conversation, system, or dataset drifts, stabilizes, loops, or transitions
 - **Integration** — use the same semantic space programmatically through a lightweight query API
 
-## Real World Examples
+## Concrete Examples
 
 Real examples from real datasets — the flow field reveals hidden dynamics that static clustering misses.
 
@@ -40,8 +40,8 @@ Real examples from real datasets — the flow field reveals hidden dynamics that
 **What TraceScope found:**
 - **Axes:** *Embodiment Gradient* (abstract AI → physical robotics), *Operational Centralization* (distributed → centralized), *Autonomy Level* (human-directed → fully autonomous)
 - **Clusters:** AI Compute Expansion, Warehouse Orchestration, AI Office Copilots, Real-time Production AI
-- **Two global attractors** emerged — both pulling toward centralized, real-time operations:
-  - **A1** (strongest): A centralized warehouse orchestration control plane — AI unifying visibility and execution across inventory, orders, labor, equipment, and logistics. The flow suggests industry trajectories converge toward a single AI layer coordinating embodied processes.
+- **Three global attractors** emerged — both pulling toward centralized, real-time operations, the strongest are:
+  - **A1** : A centralized warehouse orchestration control plane — AI unifying visibility and execution across inventory, orders, labor, equipment, and logistics. The flow suggests industry trajectories converge toward a single AI layer coordinating embodied processes.
   - **A2**: A real-time production stabilizer — AI predicting bottlenecks, rerouting around machine failures, auto-triggering replenishment. A "plant-floor nervous system" keeping production lines stable.
 
 Both attractors suggest the semantic flow of tech news converges toward centralized AI orchestration of physical operations — not just software intelligence, but real-world coordination.
