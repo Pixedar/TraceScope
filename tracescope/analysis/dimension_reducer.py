@@ -150,7 +150,8 @@ def optimize_reduction(embeddings_json,
                            mode="3D",
                            user_clusters=None,
                            init_coords_json=None,
-                           n_epochs_local=200):
+                           n_epochs_local=200,
+                           param_range=None):
 
 
 
@@ -197,7 +198,12 @@ def optimize_reduction(embeddings_json,
         return vis_dims.tolist()
 
 
-    candidate_params = list(range(5, min(200, max(n_samples//2,6)), 5))
+    if param_range is not None:
+        candidate_params = [p for p in param_range if p < n_samples]
+        if not candidate_params:
+            candidate_params = [min(param_range)]
+    else:
+        candidate_params = list(range(5, min(200, max(n_samples//2,6)), 5))
 
     target_dim = 2 if mode=="2D" else 3
     best_score = -1

@@ -19,7 +19,7 @@ import logging
 import uuid
 import time
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from tracescope.models.trace import TraceEntry, TraceSession
 
@@ -212,6 +212,7 @@ def from_list(
     texts: List[str],
     label: str = "Text collection",
     session_id: Optional[str] = None,
+    entry_scores: Optional[List[Dict[str, float]]] = None,
 ) -> TraceSession:
     """Import from a plain list of texts.
 
@@ -223,6 +224,8 @@ def from_list(
         texts: List of text strings to analyze.
         label: Human-readable label for this session.
         session_id: Optional session ID (auto-generated if omitted).
+        entry_scores: Optional per-entry score dicts, same length as texts.
+                      E.g. [{"emotion": 0.8}, {"emotion": -0.3}, ...].
 
     Returns:
         TraceSession ready for the analysis pipeline.
@@ -238,12 +241,14 @@ def from_list(
         if not text:
             skipped += 1
             continue
+        scores = entry_scores[i] if entry_scores and i < len(entry_scores) else {}
         entries.append(
             TraceEntry(
                 text=text,
                 role="entry",
                 step_index=i,
                 session_id=sid,
+                scores=scores,
             )
         )
 
@@ -263,6 +268,8 @@ def from_lists(
     labels: Optional[List[str]] = None,
     label: str = "Multi-path collection",
     session_id: Optional[str] = None,
+    entry_scores: Optional[List[List[Dict[str, float]]]] = None,
+    path_scores: Optional[Dict[int, Dict[str, float]]] = None,
 ) -> TraceSession:
     """Import multiple independent semantic paths into one unified session.
 
@@ -275,6 +282,10 @@ def from_lists(
         labels: Optional per-path labels (for metadata only).
         label: Human-readable label for the combined session.
         session_id: Optional session ID (auto-generated if omitted).
+        entry_scores: Optional per-entry scores, shape matches paths.
+                      E.g. [[{"confidence": 0.9}, ...], [{"confidence": 0.5}, ...]].
+        path_scores: Optional per-path aggregate scores.
+                     E.g. {0: {"success": 1.0, "cost": 0.05}, 1: {"success": 0.0}}.
 
     Returns:
         TraceSession with path_id set on each entry.
@@ -284,7 +295,7 @@ def from_lists(
         session = from_lists([
             ["Fed holds rates", "Tech earnings surge", "Housing cools"],
             ["Climate summit", "Quantum computing", "Mars rover update"],
-        ])
+        ], path_scores={0: {"success": 1.0}, 1: {"success": 0.5}})
     """
     if not paths:
         raise ValueError("paths list is empty — provide at least 1 path")
@@ -300,6 +311,11 @@ def from_lists(
             text = text.strip() if isinstance(text, str) else str(text).strip()
             if not text:
                 continue
+            scores = {}
+            if entry_scores and path_idx < len(entry_scores):
+                path_entry_scores = entry_scores[path_idx]
+                if path_entry_scores and step < len(path_entry_scores):
+                    scores = path_entry_scores[step]
             entries.append(
                 TraceEntry(
                     text=text,
@@ -307,6 +323,7 @@ def from_lists(
                     step_index=step,
                     session_id=sid,
                     path_id=path_idx,
+                    scores=scores,
                     metadata={
                         "path_label": (labels[path_idx]
                                        if labels and path_idx < len(labels)
@@ -320,6 +337,7 @@ def from_lists(
         label=label,
         entries=entries,
         source_format="multi_path",
+        path_scores=path_scores or {},
     )
 
 

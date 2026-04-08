@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 import numpy as np
 
@@ -28,6 +28,9 @@ class TraceEntry:
         timestamp: Unix timestamp (optional).
         path_id: Which path this entry belongs to (None = single-path mode).
         metadata: Arbitrary extra data (token counts, tool calls, etc.).
+        scores: Named numeric scores for this entry (e.g. {"emotion_valence": 0.8,
+                "error_rate": 0.1}). Fully optional — used for score-based coloring
+                in visualization when present.
     """
 
     text: str
@@ -39,6 +42,7 @@ class TraceEntry:
     timestamp: Optional[float] = None
     path_id: Optional[int] = None
     metadata: dict = field(default_factory=dict)
+    scores: Dict[str, float] = field(default_factory=dict)
 
     def has_embedding(self) -> bool:
         return self.embedding is not None
@@ -54,6 +58,8 @@ class TraceEntry:
             "path_id": self.path_id,
             "metadata": self.metadata,
         }
+        if self.scores:
+            d["scores"] = self.scores
         return d
 
     @classmethod
@@ -67,6 +73,7 @@ class TraceEntry:
             timestamp=d.get("timestamp"),
             path_id=d.get("path_id"),
             metadata=d.get("metadata", {}),
+            scores=d.get("scores", {}),
         )
 
 
@@ -82,6 +89,9 @@ class TraceSession:
                        "plain_text", "reasoning").
         llm_model: The LLM that generated this conversation (optional).
         created_at: Unix timestamp of import time.
+        path_scores: Per-path aggregate scores, keyed by path_id.
+                     E.g. {0: {"success": 1.0, "cost": 0.05}, 1: {"success": 0.0}}.
+                     Fully optional — used for score-based path coloring.
     """
 
     session_id: str
@@ -90,6 +100,7 @@ class TraceSession:
     source_format: str
     llm_model: Optional[str] = None
     created_at: float = field(default_factory=time.time)
+    path_scores: Dict[int, Dict[str, float]] = field(default_factory=dict)
 
     @property
     def texts(self) -> List[str]:
@@ -105,8 +116,18 @@ class TraceSession:
             return None
         return np.array([e.embedding for e in self.entries])
 
+    @property
+    def score_channels(self) -> List[str]:
+        """Return sorted list of all score channel names found across entries and paths."""
+        channels = set()
+        for e in self.entries:
+            channels.update(e.scores.keys())
+        for ps in self.path_scores.values():
+            channels.update(ps.keys())
+        return sorted(channels)
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             "session_id": self.session_id,
             "label": self.label,
             "entries": [e.to_dict() for e in self.entries],
@@ -114,10 +135,16 @@ class TraceSession:
             "llm_model": self.llm_model,
             "created_at": self.created_at,
         }
+        if self.path_scores:
+            # JSON keys must be strings
+            d["path_scores"] = {str(k): v for k, v in self.path_scores.items()}
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "TraceSession":
         entries = [TraceEntry.from_dict(e) for e in d["entries"]]
+        raw_ps = d.get("path_scores", {})
+        path_scores = {int(k): v for k, v in raw_ps.items()} if raw_ps else {}
         return cls(
             session_id=d["session_id"],
             label=d["label"],
@@ -125,6 +152,7 @@ class TraceSession:
             source_format=d["source_format"],
             llm_model=d.get("llm_model"),
             created_at=d.get("created_at", 0.0),
+            path_scores=path_scores,
         )
 
     def __len__(self) -> int:

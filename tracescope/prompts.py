@@ -324,6 +324,7 @@ def build_probe_explain_prompt(
 def build_path_explain_prompt(
     axis_labels: List[str],
     control_points: List[dict],
+    score_context: list = None,
 ) -> str:
     """Build multi-point trajectory explanation prompt.
 
@@ -332,6 +333,8 @@ def build_path_explain_prompt(
         control_points: List of dicts, each with:
             - "axis_pcts": [x%, y%, z%] as integers
             - "cluster_distances": [(label, closeness_pct), ...]
+        score_context: Optional list parallel to control_points, each a dict
+            mapping score channel name to its average value at that point.
 
     Returns:
         Complete prompt string.
@@ -352,7 +355,22 @@ def build_path_explain_prompt(
                 f'{closeness}% closeness to cluster "{label}" '
                 f'(0% = farthest, 100% = at center)"; '
             )
+
+        # Score values at this control point
+        if score_context and j < len(score_context) and score_context[j]:
+            scores_str = "; ".join(
+                f'{ch}={v:.2f}' for ch, v in score_context[j].items()
+            )
+            prompt += f"scores: {scores_str}; "
+
         prompt += "\n"
+
+    # Score instruction
+    if score_context and any(sc for sc in score_context if sc):
+        prompt += (
+            "Include how the score values changed along this path "
+            "(e.g. moving toward higher/lower success, error rate, etc). "
+        )
 
     prompt += (
         "Do not say how each component changed but fuse all components "
@@ -428,3 +446,115 @@ def format_summary(
         n_entries=n_entries,
         cluster_sequence=cluster_sequence,
     )
+
+
+# ═══════════════════════════════════════════════════
+# ATTRACTOR EXPLANATION
+# ═══════════════════════════════════════════════════
+
+ATTRACTOR_EXPLAIN_SYSTEM = (
+    "You are an expert in LLM interpretability and dynamical systems. "
+    "You analyze flow fields in semantic embedding spaces. "
+    "An attractor is like a gravitational well in the flow field — "
+    "a region that pulls nearby trajectories toward itself. "
+    "Conversations, reasoning chains, and agent traces that enter its basin "
+    "of attraction are drawn inexorably toward this point, like rivers "
+    "flowing downhill into a lake. The attractor represents a stable "
+    "semantic destination — an end-state that the system naturally evolves toward."
+)
+
+
+def build_attractor_explain_prompt(
+    axis_labels: List[str],
+    axis_pcts: List[int],
+    cluster_distances: List[Tuple[str, int]],
+    nearest_texts: List[str],
+    strength: float,
+    basin_fraction: float,
+    divergence: float,
+    score_info: Optional[dict] = None,
+    trajectory_explanations: Optional[List[str]] = None,
+) -> str:
+    """Build prompt for explaining the semantic meaning of a flow attractor.
+
+    Args:
+        axis_labels: ["label_x", "label_y", "label_z"]
+        axis_pcts: [x%, y%, z%] position of attractor center
+        cluster_distances: [(cluster_label, closeness_pct), ...]
+        nearest_texts: 3-5 nearest data point texts to the center
+        strength: Attractor strength [0-1], 1 = strongest in the field
+        basin_fraction: Fraction of flow field captured [0-1]
+        divergence: Raw divergence value (more negative = stronger convergence)
+        score_info: Optional dict with score channel context, e.g.
+            {"channel": "solved", "mean_score_raw": 0.73, "interpretation": "positive"}
+        trajectory_explanations: Optional list of 3 LLM-generated path
+            explanations from probes that flowed from distant starting
+            points and converged into this attractor basin.
+    """
+    prompt = "A flow attractor was detected in the semantic embedding space.\n"
+    prompt += "Think of it like a gravitational well: traces that wander near "
+    prompt += "this region get pulled in and settle here. It is NOT a path — "
+    prompt += "it is a destination that the flow field funnels trajectories toward, "
+    prompt += "like a river basin where multiple streams converge.\n\n"
+
+    # Location
+    prompt += "Attractor center location:\n"
+    for label, pct in zip(axis_labels, axis_pcts):
+        prompt += f'  {pct}% along axis "{label}"\n'
+
+    # Cluster proximity
+    prompt += "\nDistance to clusters:\n"
+    for label, closeness in cluster_distances:
+        prompt += (f'  {closeness}% closeness to cluster "{label}" '
+                   f'(0%=farthest, 100%=at center)\n')
+
+    # Strength context
+    prompt += f"\nAttractor properties:\n"
+    prompt += f"  Strength: {strength:.0%} (relative to strongest attractor)\n"
+    prompt += f"  Basin size: captures {basin_fraction:.0%} of the flow field\n"
+    prompt += f"  Convergence: divergence={divergence:.4f} "
+    prompt += f"(more negative = stronger pull)\n"
+
+    # Score context
+    if score_info:
+        ch = score_info.get("channel", "unknown")
+        raw = score_info.get("mean_score_raw", 0.5)
+        interp = score_info.get("interpretation", "neutral")
+        prompt += (f'\nScore context (channel "{ch}"):\n'
+                   f"  Mean score in basin: {raw:.2f} → this is a {interp} attractor\n"
+                   f"  Meaning: traces that converge here tend toward {interp} outcomes "
+                   f'for "{ch}"\n')
+
+    # Nearby evidence
+    if nearest_texts:
+        prompt += "\nNearest data points to the attractor center:\n"
+        for i, text in enumerate(nearest_texts[:5]):
+            truncated = text[:200] + "..." if len(text) > 200 else text
+            prompt += f'  {i + 1}. "{truncated}"\n'
+
+    # Trajectory convergence evidence
+    if trajectory_explanations:
+        prompt += (
+            "\nConvergence evidence — three probes were released from distant, "
+            "different parts of the semantic space. All three were pulled by "
+            "the flow field into this attractor. Here is what each journey "
+            "looked like:\n"
+        )
+        for i, traj_text in enumerate(trajectory_explanations):
+            prompt += f"\n  Trajectory {i + 1}: {traj_text}\n"
+        prompt += (
+            "\nNotice the COMMON DESTINATION these three very different "
+            "starting points all converge to. This is the key insight.\n"
+        )
+
+    prompt += (
+        "\nExplain what this attractor represents as a semantic destination. "
+        "Why does the flow field funnel trajectories here — what outcome, "
+        "end-state, or resolution does this basin represent? "
+        "Think of it as: 'traces that reach this region have arrived at ___.' "
+        "Be specific based on the axes, clusters, nearby texts, and "
+        "the convergence trajectories above. "
+        "Reply in exactly 50 words."
+    )
+
+    return prompt

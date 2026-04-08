@@ -32,6 +32,7 @@ except ImportError as _e:
 from tracescope.models.analysis import AnalysisResult
 from tracescope.visualization.scatter3d import (
     plot_clusters_3d, catmull_rom_spline, CLUSTER_COLORS, _apply_dark_theme,
+    _score_to_plotly_colors,
 )
 from tracescope.visualization.flow_field import FlowFieldSystem, turbo_colormap
 from tracescope.visualization.probe import probe_point
@@ -195,6 +196,25 @@ def _build_layout(result: AnalysisResult) -> html.Div:
                     ),
                 ], style=_CARD_STYLE),
 
+                # Score-based coloring (only if scores exist)
+                *([html.Div([
+                    html.H4("🎨 Color by Score",
+                             style={"color": _ACCENT, "margin": "0 0 8px 0", "fontSize": "14px"}),
+                    dcc.Dropdown(
+                        id="score-color-dropdown",
+                        options=[{"label": "(clusters)", "value": ""}] + [
+                            {"label": ch, "value": ch}
+                            for ch in result.score_channels
+                        ],
+                        value="",
+                        clearable=False,
+                        style={"backgroundColor": "#333", "color": _TEXT, "fontSize": "13px"},
+                    ),
+                ], style=_CARD_STYLE)] if result.score_channels else [
+                    html.Div(dcc.Dropdown(id="score-color-dropdown", options=[], value="",
+                                          style={"display": "none"}))
+                ]),
+
                 # Probe sliders
                 html.Div([
                     html.H4("🎯 Probe",
@@ -357,39 +377,69 @@ def _register_callbacks(app: Dash, result: AnalysisResult):
         Input("scatter3d", "clickData"),
         Input("display-toggles", "value"),
         Input("control-points-store", "data"),
+        Input("score-color-dropdown", "value"),
         State("flow-toggles", "value"),
     )
     def render_figure(flow_data, sx, sy, sz, click_data,
-                      display_toggles, control_points, flow_toggles):
+                      display_toggles, control_points, score_channel, flow_toggles):
         display_toggles = display_toggles or []
         flow_toggles = flow_toggles or []
+        score_channel = score_channel or ""
 
         fig = go.Figure()
         pts = result.projected_3d
         labels = result.clusters.labels
         axis_labels = result.axis_info.labels
 
-        # ── Cluster scatter points ──────────────────────────
+        # ── Scatter points ──────────────────────────────────
         if "show_points" in display_toggles:
-            for c in range(result.clusters.n_clusters):
-                mask = [i for i, l in enumerate(labels) if l == c]
-                if not mask:
-                    continue
-                cluster_pts = pts[mask]
-                cluster_texts = [result.session.entries[i].text[:80] for i in mask]
-                cluster_roles = [result.session.entries[i].role for i in mask]
-                hover = [f"[{r}] {t}..." for r, t in zip(cluster_roles, cluster_texts)]
-                color = CLUSTER_COLORS[c % len(CLUSTER_COLORS)]
-                label = (
-                    result.cluster_labels[c]
-                    if c < len(result.cluster_labels) else f"Cluster {c}"
-                )
+            if score_channel and score_channel in result.score_channels:
+                # Score-based coloring
+                entry_scores = result.get_entry_scores(score_channel)
+                path_score_map = result.get_path_scores(score_channel)
+                final_scores = []
+                for i, e in enumerate(result.session.entries):
+                    s = entry_scores[i]
+                    if s is None and e.path_id is not None:
+                        s = path_score_map.get(e.path_id)
+                    final_scores.append(s)
+                point_colors = _score_to_plotly_colors(final_scores)
+                hover = [
+                    f"[{result.session.entries[i].role}] "
+                    f"{result.session.entries[i].text[:80]}... "
+                    f"({score_channel}: {final_scores[i]:.2f})"
+                    if final_scores[i] is not None
+                    else f"[{result.session.entries[i].role}] "
+                         f"{result.session.entries[i].text[:80]}..."
+                    for i in range(len(pts))
+                ]
                 fig.add_trace(go.Scatter3d(
-                    x=cluster_pts[:, 0], y=cluster_pts[:, 1], z=cluster_pts[:, 2],
+                    x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
                     mode="markers",
-                    marker=dict(size=6, color=color, opacity=0.8),
-                    name=label, text=hover, hoverinfo="text",
+                    marker=dict(size=6, color=point_colors, opacity=0.8),
+                    name=f"Score: {score_channel}", text=hover, hoverinfo="text",
                 ))
+            else:
+                # Cluster-based coloring (default)
+                for c in range(result.clusters.n_clusters):
+                    mask = [i for i, l in enumerate(labels) if l == c]
+                    if not mask:
+                        continue
+                    cluster_pts = pts[mask]
+                    cluster_texts = [result.session.entries[i].text[:80] for i in mask]
+                    cluster_roles = [result.session.entries[i].role for i in mask]
+                    hover = [f"[{r}] {t}..." for r, t in zip(cluster_roles, cluster_texts)]
+                    color = CLUSTER_COLORS[c % len(CLUSTER_COLORS)]
+                    label = (
+                        result.cluster_labels[c]
+                        if c < len(result.cluster_labels) else f"Cluster {c}"
+                    )
+                    fig.add_trace(go.Scatter3d(
+                        x=cluster_pts[:, 0], y=cluster_pts[:, 1], z=cluster_pts[:, 2],
+                        mode="markers",
+                        marker=dict(size=6, color=color, opacity=0.8),
+                        name=label, text=hover, hoverinfo="text",
+                    ))
 
         # ── Catmull-Rom spline path ─────────────────────────
         if "show_path" in display_toggles and len(pts) >= 2:

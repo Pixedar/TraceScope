@@ -30,70 +30,129 @@ from tracescope.utils.hashing import embeddings_fingerprint
 logger = logging.getLogger(__name__)
 
 
-def _build_velocity_grid(axis_min, axis_max, grid_size=40):
+def _build_density_grid(grid_pts, data_pts, grid_size, path_ids=None):
+    """Compute a data-density confidence grid from path coverage.
+
+    For each grid cell, measures how close it is to real training paths.
+    Grid cells near data get confidence ~1.0; empty regions far from any
+    path get confidence ~0.0.
+
+    The bandwidth is set to 3× the grid cell diagonal so that any cell
+    within a few cells of real data stays bright, and only truly empty
+    regions fade out.
+    """
+    from scipy.spatial import cKDTree
+
+    pts = np.asarray(data_pts, dtype=np.float32)
+
+    # Build dense samples along path segments (not just scatter points)
+    if path_ids is not None:
+        pid = np.asarray(path_ids)
+        same_path = pid[:-1] == pid[1:]
+    else:
+        same_path = np.ones(len(pts) - 1, dtype=bool)
+
+    samples = [pts]
+    for i in np.where(same_path)[0]:
+        seg_len = float(np.linalg.norm(pts[i + 1] - pts[i]))
+        if seg_len < 1e-8:
+            continue
+        median_step = float(np.median(np.linalg.norm(
+            np.diff(pts, axis=0), axis=1)) + 1e-8)
+        n_interp = max(2, int(np.ceil(seg_len * 4 / median_step)))
+        n_interp = min(n_interp, 10)
+        ts = np.linspace(0, 1, n_interp + 2)[1:-1]
+        for t in ts:
+            samples.append((pts[i] * (1 - t) + pts[i + 1] * t).reshape(1, 3))
+
+    all_samples = np.concatenate(samples, axis=0)
+
+    tree = cKDTree(all_samples)
+    dist_to_nearest, _ = tree.query(grid_pts, k=1)
+
+    # Adaptive bandwidth: set so that the median-distance grid cell
+    # gets confidence ≈ 0.5.  This guarantees meaningful contrast —
+    # cells closer than median → conf > 0.5 (bright),
+    # cells farther than median → conf < 0.5 (fading).
+    bandwidth = float(np.median(dist_to_nearest))
+    bandwidth = max(bandwidth, 1e-6)
+
+    confidence = np.exp(-(dist_to_nearest / bandwidth) ** 2).astype(np.float32)
+    return confidence.reshape(grid_size, grid_size, grid_size)
+
+
+def _build_velocity_grid(axis_min, axis_max, grid_size=40,
+                         data_points=None, path_ids=None):
     """Build velocity grid from a trained flow model (MDN or RBF).
 
     Samples the model's velocity at each point on a grid_size³ lattice.
+    Computes a data-density confidence grid so that regions far from any
+    real training data (where the model is extrapolating / "hallucinating")
+    can be faded out.
+
+    Args:
+        data_points: (N, 3) array of projected_3d training points, used
+            to compute the density-based confidence grid.
+        path_ids: list of path IDs per point, so density accounts for
+            interpolated path segments (not just scatter points).
 
     Returns:
-        (grid_size, grid_size, grid_size, 3) numpy array of velocities.
+        (velocity_grid, confidence_grid) tuple where:
+        - velocity_grid: (G, G, G, 3) numpy array or None
+        - confidence_grid: (G, G, G) numpy array in [0, 1] or None
     """
     from tracescope.analysis.axes_nn import _state
 
     a_min = np.asarray(axis_min, dtype=np.float32)
     a_max = np.asarray(axis_max, dtype=np.float32)
-    span = a_max - a_min
 
     kind = _state.get("kind")
+
+    # Build the grid point coordinates (shared by all model types)
+    lin = [np.linspace(a_min[d], a_max[d], grid_size) for d in range(3)]
+    gx, gy, gz = np.meshgrid(lin[0], lin[1], lin[2], indexing="ij")
+    grid_pts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1).astype(np.float32)
 
     # ── RBF path: batch-evaluate predict_velocity ──────────────────
     if kind == "rbf" and "predict_velocity" in _state:
         predict_fn = _state["predict_velocity"]
-
-        # Build all grid points at once for efficiency
-        lin = [np.linspace(a_min[d], a_max[d], grid_size) for d in range(3)]
-        gx, gy, gz = np.meshgrid(lin[0], lin[1], lin[2], indexing="ij")
-        query = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
-
-        vel = predict_fn(query)  # (grid_size³, 3)
+        vel = predict_fn(grid_pts)  # (grid_size³, 3)
         grid = vel.reshape(grid_size, grid_size, grid_size, 3).astype(np.float32)
-        logger.info(f"Built {grid_size}³ velocity grid from RBF")
-        return grid
+        conf_grid = None
+        if data_points is not None and len(data_points) >= 5:
+            conf_grid = _build_density_grid(grid_pts, data_points, grid_size, path_ids)
+        logger.info(f"Built {grid_size}³ velocity grid from RBF"
+                    f"{' + density confidence' if conf_grid is not None else ''}")
+        return grid, conf_grid
 
     # ── MDN path: requires PyTorch ─────────────────────────────────
     if kind != "mdn" or "net" not in _state:
         logger.warning("No compatible flow model in _state, cannot build velocity grid")
-        return None
+        return None, None
 
     try:
         import torch
     except ImportError:
         logger.warning("PyTorch not available, cannot build velocity grid")
-        return None
+        return None, None
 
     net = _state["net"]
-    grid = np.zeros((grid_size, grid_size, grid_size, 3), dtype=np.float32)
 
     net.eval()
     with torch.no_grad():
-        for ix in range(grid_size):
-            for iy in range(grid_size):
-                for iz in range(grid_size):
-                    fx = ix / (grid_size - 1)
-                    fy = iy / (grid_size - 1)
-                    fz = iz / (grid_size - 1)
-                    x = a_min[0] + fx * span[0]
-                    y = a_min[1] + fy * span[1]
-                    z = a_min[2] + fz * span[2]
+        t = torch.from_numpy(grid_pts)
+        mu1, mu2, sigma1, sigma2, logit_pi = net(t)
+        pi = torch.sigmoid(logit_pi).unsqueeze(-1)
+        v = (pi * mu1 + (1 - pi) * mu2).numpy()
+        grid = v.reshape(grid_size, grid_size, grid_size, 3).astype(np.float32)
 
-                    inp = torch.tensor([x, y, z], dtype=torch.float32)
-                    mu1, mu2, sigma1, sigma2, logit_pi = net(inp)
-                    pi = torch.sigmoid(logit_pi)
-                    v = pi * mu1 + (1 - pi) * mu2
-                    grid[ix, iy, iz] = v.numpy()
+    # Data-density confidence (works for both MDN and RBF)
+    conf_grid = None
+    if data_points is not None and len(data_points) >= 5:
+        conf_grid = _build_density_grid(grid_pts, data_points, grid_size, path_ids)
 
-    logger.info(f"Built {grid_size}³ velocity grid from MDN")
-    return grid
+    logger.info(f"Built {grid_size}³ velocity + density-confidence grid from MDN")
+    return grid, conf_grid
 
 
 class AnalysisPipeline:
@@ -151,6 +210,7 @@ class AnalysisPipeline:
         rbf_kernel: str = "thin_plate_spline",
         rbf_smoothing: float = 0.1,
         min_k: int = 3,
+        param_range: Optional[list] = None,
     ) -> AnalysisResult:
         """Run the full analysis pipeline.
 
@@ -175,6 +235,10 @@ class AnalysisPipeline:
             rbf_smoothing: RBF regularization (default 0.1). 0 = exact interpolation.
             min_k: Minimum number of clusters for auto-selection (default 3).
                 The silhouette search starts from this value. Range: 2-10.
+            param_range: Optional list of n_neighbors values to search during
+                dimension reduction (e.g. [45, 50, 55]). Default None = full
+                search [5, 10, 15, ..., 195]. Use this to speed up re-runs
+                when you already know the approximate best parameter.
 
         Returns:
             AnalysisResult with all computed data.
@@ -193,6 +257,7 @@ class AnalysisPipeline:
         if cache_path is not None:
             import hashlib as _hl
             from pathlib import Path as _Path
+            _Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
             json_path = _Path(cache_path + ".json")
             npz_path = _Path(cache_path + ".npz")
             if json_path.exists() and npz_path.exists():
@@ -207,7 +272,9 @@ class AnalysisPipeline:
                         logger.info("Full result cache hit — skipping pipeline")
                         if progress_callback:
                             progress_callback("cache_hit", 1.0)
-                        return AnalysisResult.load_result(cache_path)
+                        _result = AnalysisResult.load_result(cache_path)
+                        _result.cache_path = cache_path
+                        return _result
                     else:
                         logger.info("Cache fingerprint mismatch — re-running pipeline")
                 except Exception as e:
@@ -297,7 +364,8 @@ class AnalysisPipeline:
             ).reshape(n_entries, 3).copy()
         else:
             embeddings_json = json.dumps(embeddings.tolist())
-            reduction_json = optimize_reduction(embeddings_json, cluster_labels_json)
+            reduction_json = optimize_reduction(embeddings_json, cluster_labels_json,
+                                                    param_range=param_range)
             reduction_raw = json.loads(reduction_json)
             projected_3d = np.array(reduction_raw["embedding"], dtype=np.float32)
             self._result_cache.put_result(
@@ -402,6 +470,7 @@ class AnalysisPipeline:
         # ── Step 7: Train flow model (MDN or GPVF) ───────────────────
         flow_trained = False
         velocity_grid = None
+        confidence_grid = None
         axis_min_arr = None
         axis_max_arr = None
         mdn_simulate = None
@@ -459,14 +528,32 @@ class AnalysisPipeline:
                             velocity_grid_size, velocity_grid_size,
                             velocity_grid_size, 3
                         ).copy()
+                        # Try loading cached confidence grid
+                        cached_conf = self._result_cache.get_result(
+                            "confidence_grid", grid_fp
+                        )
+                        if cached_conf is not None:
+                            confidence_grid = np.frombuffer(
+                                cached_conf, dtype=np.float32
+                            ).reshape(
+                                velocity_grid_size, velocity_grid_size,
+                                velocity_grid_size
+                            ).copy()
                     else:
-                        velocity_grid = _build_velocity_grid(
-                            axis_min_arr, axis_max_arr, velocity_grid_size
+                        velocity_grid, confidence_grid = _build_velocity_grid(
+                            axis_min_arr, axis_max_arr, velocity_grid_size,
+                            data_points=projected_3d,
+                            path_ids=_path_ids,
                         )
                         if velocity_grid is not None:
                             self._result_cache.put_result(
                                 "velocity_grid", grid_fp,
                                 velocity_grid.tobytes()
+                            )
+                        if confidence_grid is not None:
+                            self._result_cache.put_result(
+                                "confidence_grid", grid_fp,
+                                confidence_grid.tobytes()
                             )
                     _progress("velocity_grid", 1.0)
 
@@ -485,17 +572,21 @@ class AnalysisPipeline:
             cluster_labels=cluster_labels_final,
             flow_model_trained=flow_trained,
             velocity_grid=velocity_grid,
+            confidence_grid=confidence_grid,
             axis_min=axis_min_arr,
             axis_max=axis_max_arr,
             mdn_simulate=mdn_simulate,
             cluster_centroids_3d=cluster_centroids_3d,
             max_cluster_distance=max_cluster_distance,
             fitted_reducer=fitted_reducer,
+            cache_path=cache_path,
         )
 
         # ── Save to full-result cache ─────────────────────────────────
         if cache_path is not None:
             try:
+                from pathlib import Path as _Path
+                _Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
                 result.save_result(cache_path)
                 logger.info(f"Saved full result cache to {cache_path}")
             except Exception as e:

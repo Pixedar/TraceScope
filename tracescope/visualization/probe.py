@@ -57,10 +57,10 @@ def probe_point(
 
     # Cluster distances (closeness %)
     cluster_distances = {}
+    max_dist = float(np.linalg.norm(maxs - mins))
     for c in range(result.clusters.n_clusters):
-        centroid = np.array(result.clusters.clusters[c]["centroid"][:3])
+        centroid = result.cluster_centroids_3d[c]
         dist = float(np.linalg.norm(probe - centroid))
-        max_dist = float(np.linalg.norm(maxs - mins))
         closeness = max(0, (1 - dist / max_dist) * 100) if max_dist > 0 else 0
         label = (
             result.cluster_labels[c]

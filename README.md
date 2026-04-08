@@ -24,6 +24,77 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 - **Interpretability** — inspect how a conversation, system, or dataset drifts, stabilizes, loops, or transitions
 - **Integration** — use the same semantic space programmatically through a lightweight query API
 
+## Real World Examples
+
+Real examples from real datasets — the flow field reveals hidden dynamics that static clustering misses.
+
+<details>
+<summary><b>AI & Tech News Headlines: Where is the industry flowing?</b></summary>
+
+~350 synthetic news headlines spanning AI, chips, climate, energy, biotech, space, and more — a synthetic test to demonstrate what TraceScope reveals. In a real deployment you'd use actual news feeds.
+
+<p align="center">
+  <img src="docs/assets/news_headlines.gif" alt="News headlines flow field with attractors" width="800">
+</p>
+
+**What TraceScope found:**
+- **Axes:** *Embodiment Gradient* (abstract AI → physical robotics), *Operational Centralization* (distributed → centralized), *Autonomy Level* (human-directed → fully autonomous)
+- **Clusters:** AI Compute Expansion, Warehouse Orchestration, AI Office Copilots, Real-time Production AI
+- **Two global attractors** emerged — both pulling toward centralized, real-time operations:
+  - **A1** (strongest): A centralized warehouse orchestration control plane — AI unifying visibility and execution across inventory, orders, labor, equipment, and logistics. The flow suggests industry trajectories converge toward a single AI layer coordinating embodied processes.
+  - **A2**: A real-time production stabilizer — AI predicting bottlenecks, rerouting around machine failures, auto-triggering replenishment. A "plant-floor nervous system" keeping production lines stable.
+
+Both attractors suggest the semantic flow of tech news converges toward centralized AI orchestration of physical operations — not just software intelligence, but real-world coordination.
+
+**Note:** This uses synthetic headlines for demonstration. In practice, feed in real news data for genuine industry insights.
+
+**Run it yourself:**
+```bash
+python examples/ai_news_headlines.py
+```
+</details>
+
+<details>
+<summary><b>PRM800K: The shape of mathematical reasoning</b></summary>
+
+438 step-by-step math reasoning chains from [PRM800K](https://github.com/openai/prm800k) (MIT license) — a dataset of human-labeled process reward model training data. Each path is a chain of reasoning steps with per-step quality ratings. An experiment to see the overall shape and flow of mathematical reasoning in an LLM.
+
+<p align="center">
+  <img src="docs/assets/prm_demo.gif" alt="PRM800K math reasoning flow with found_error coloring" width="800">
+</p>
+
+**What TraceScope found:**
+- **Axes:** *Symbolic↔Numeric* (abstract symbols vs concrete numbers), *Formulaic↔Combinatorics* (closed-form algebra vs counting/enumeration), *Notation Density* (sparse reasoning → heavy symbolic manipulation)
+- **Clusters:** Triangle Centroid Geometry, Algebraic Term Manipulation, Number Pattern Solving
+- **Flow + found_error coloring** revealed a continuous reasoning corridor with **four local attractors**, not just three static clusters.
+- The strongest attractor (**A1**) sits in a sharply **error-associated** basin: trajectories converge toward tidy, computation-heavy numeric endgames that often terminate at the **first detected error**.
+- A nearby attractor (**A4**) is strongly **success-associated**, suggesting many math failures come from **fine-grained mistakes inside otherwise very similar symbolic reasoning styles**, not from entering a completely different region of thought.
+- A more distant attractor (**A2**) forms an alternate successful basin, while **A3** appears mixed — showing that outcome depends on **local flow dynamics inside a cluster family**, not cluster identity alone.
+
+**Run it yourself:**
+```bash
+python examples/prm_demo.py
+```
+</details>
+
+<details>
+<summary><b>SWE-agent: Hidden attractors in software engineering traces</b></summary>
+
+Running TraceScope on the [SWE-agent trajectories](https://huggingface.co/datasets/nebius/SWE-agent-trajectories) dataset (CC-BY-4.0) — real thought/action/observation cycles from an autonomous coding agent working on GitHub issues.
+
+<p align="center">
+  <img src="docs/assets/swe_agent.gif" alt="SWE-agent flow showing two attractors" width="800">
+</p>
+
+The MDN flow field discovered **two global attractors** even though the cluster distribution gave no hint of their existence. Traditional tools would show you clusters — TraceScope shows you the *currents* that pull agent behavior, computed from actual trajectory paths rather than static point distributions.
+
+**Run it yourself:**
+```bash
+python examples/swe_agent.py
+```
+</details>
+
+
 ## Installation
 
 ```bash
@@ -88,7 +159,7 @@ result = pipeline.analyze(session, train_flow=True, cache_path="cache/headlines"
 
 ### Visualize
 
-The included `sample_data/prm_demo_40paths.json` contains 55 math reasoning chains from the PRM800K dataset — a good example of visualizing the semantic flow of step-by-step mathematical problem solving across diverse problem types.
+The included `sample_data/prm_demo_paths.json` contains 438 math reasoning chains from the PRM800K dataset — a good example of visualizing the semantic flow of step-by-step mathematical problem solving across diverse problem types.
 
 ```python
 from tracescope import (
@@ -96,12 +167,12 @@ from tracescope import (
 )
 
 config = TraceScopeConfig(embedding_model="text-embedding-3-large")
-session = auto_import("sample_data/prm_demo_40paths.json")
+session = auto_import("sample_data/prm_demo_paths.json")
 pipeline = AnalysisPipeline(config)
 result = pipeline.analyze(session, train_flow=True, cache_path="cache/prm_demo")
 
 # Interactive 3D renderer with flow field animation
-# Controls: Space=flow, B=ball, P=points, A=auto-rotate, +/-=size
+# Controls: Space=flow, B=ball, P=points, +/-=size
 launch_renderer(result, explainer=pipeline.explainer)
 ```
 
@@ -202,6 +273,69 @@ Second message
 Third message
 ```
 
+## Scores
+
+Attach numeric metadata to your traces for score-based visualization. Two levels:
+
+- **Entry scores** — per-step values (e.g., confidence at each reasoning step)
+- **Path scores** — per-path aggregate values (e.g., overall success/failure)
+
+### Adding scores via `from_lists`
+
+```python
+from tracescope import from_lists
+
+session = from_lists(
+    paths=[
+        ["Step 1: search", "Step 2: found result", "Step 3: write report"],
+        ["Step 1: search", "Step 2: API timeout", "Step 3: retry failed"],
+    ],
+    labels=["Success", "Failure"],
+    entry_scores=[
+        [{"confidence": 0.6}, {"confidence": 0.85}, {"confidence": 0.95}],
+        [{"confidence": 0.5}, {"confidence": 0.2}, {"confidence": 0.1}],
+    ],
+    path_scores={
+        0: {"success": 1.0},
+        1: {"success": 0.0},
+    },
+)
+```
+
+### Adding scores via `from_list`
+
+```python
+from tracescope import from_list
+
+session = from_list(
+    ["text one", "text two", "text three"],
+    entry_scores=[{"quality": 0.9}, {"quality": 0.5}, {"quality": 0.8}],
+)
+```
+
+### Visualization
+
+Score channels automatically appear in the GPU renderer sidebar:
+- **Flow particle coloring** — checkbox per channel colors flow particles by interpolated score (red→yellow→green)
+- **Data point coloring** — checkbox per channel colors data points by score
+
+Score coloring is precomputed on a 3D grid for full-speed animation (no per-frame overhead).
+
+### Programmatic access
+
+```python
+query = TraceQuery(result, pipeline.embedding_provider)
+
+# List available score channels
+lookup = query.get_lookup()
+print(lookup["score_channels"])  # {"success": {"mean": 0.67, "min": 0.0, "max": 1.0}, ...}
+
+# Score summary with per-cluster and per-path breakdown
+summary = query.score_summary("success")
+print(summary["cluster_breakdown"])  # [{cluster, count, mean}, ...]
+print(summary["path_breakdown"])     # [{path_label, path_score, entry_mean}, ...]
+```
+
 ## Programmatic API — TraceQuery
 
 After running the pipeline once, use `TraceQuery` for fast programmatic access to the semantic space. No re-computation needed — everything is served from the pre-computed lookup table and velocity grid.
@@ -225,6 +359,7 @@ lookup["n_points"]       # number of original data points
 lookup["has_flow"]       # whether flow field is available
 lookup["axis_ranges"]    # [{axis, min, max}, ...]
 lookup["embedding_model"] # e.g. "text-embedding-3-large"
+lookup["score_channels"] # {"success": {"mean": 0.67, ...}, ...} (if scores exist)
 ```
 
 ### `explain_path(texts)` — Path through semantic space
@@ -341,6 +476,7 @@ config = TraceScopeConfig(
     mdn_hidden=100,                  # MDN hidden layer size (50-300)
     mdn_iters=8000,                  # MDN training iterations (2000-20000)
     velocity_grid_size=40,           # 3D velocity grid resolution (20-60)
+    param_range=[5, 10, ..., 195],   # By default, UMAP searches the full range from 5 to 195 in steps of 5 which is slow; for much faster runs, you can provide only one or two values to search, but this will usually reduce quality
     rbf_kernel="thin_plate_spline",  # RBF kernel (see below)
     rbf_smoothing=0.1,               # RBF regularization (0 = exact)
 )

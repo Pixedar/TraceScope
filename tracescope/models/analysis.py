@@ -81,6 +81,7 @@ class AnalysisResult:
     segments: Optional[List[dict]] = None
     # Flow field data (from MDN model)
     velocity_grid: Optional[np.ndarray] = None       # (40,40,40,3) velocity field
+    confidence_grid: Optional[np.ndarray] = None     # (40,40,40) MDN confidence [0,1]
     axis_min: Optional[np.ndarray] = None             # bounding box min [3]
     axis_max: Optional[np.ndarray] = None             # bounding box max [3]
     mdn_simulate: Optional[Any] = None                # MDN simulate() callable
@@ -88,10 +89,82 @@ class AnalysisResult:
     # Cluster geometry in 3D projected space
     cluster_centroids_3d: Optional[np.ndarray] = None # (K,3) cluster centers
     max_cluster_distance: float = 1.0                 # max pairwise dist between centroids
+    cache_path: Optional[str] = None                  # base cache path for attractor caching
 
     @property
     def n_entries(self) -> int:
         return len(self.session)
+
+    @property
+    def score_channels(self) -> List[str]:
+        """Return sorted list of all score channel names available in the data."""
+        return self.session.score_channels
+
+    def get_entry_scores(self, channel: str) -> List[Optional[float]]:
+        """Return score values for a channel across all entries (None if missing)."""
+        return [
+            e.scores.get(channel) for e in self.session.entries
+        ]
+
+    def get_path_scores(self, channel: str) -> dict:
+        """Return {path_id: score} for a channel from path_scores."""
+        return {
+            pid: scores[channel]
+            for pid, scores in self.session.path_scores.items()
+            if channel in scores
+        }
+
+    def find_attractors(self, score_channel: Optional[str] = None) -> list:
+        """Find flow attractors in the velocity field.
+
+        Detects regions where flow converges and particles accumulate,
+        distinguishing real attractors from boundary effects and dead zones.
+        Computed on demand from the velocity grid (fast, ~0.1s).
+
+        Args:
+            score_channel: Optional score channel name to compute mean
+                score within each attractor's basin (e.g. "solved" to see
+                if the attractor is positive or negative).
+
+        Returns:
+            List of attractor dicts with keys:
+                position, strength, divergence, basin_mask,
+                basin_size, basin_fraction, mean_score
+        """
+        if self.velocity_grid is None:
+            return []
+        from tracescope.visualization.flow_field import FlowFieldSystem
+        flow = FlowFieldSystem(
+            self.velocity_grid, self.axis_min, self.axis_max,
+            particle_grid=2,  # minimal — we only need the grid, not particles
+            confidence_grid=self.confidence_grid,
+        )
+        # Build score grid if requested
+        score_grid = None
+        if score_channel and self.score_channels:
+            if score_channel in self.score_channels:
+                from tracescope.visualization.gl_renderer import FlowRenderer
+                # Get normalized scores per entry
+                raw = self.get_entry_scores(score_channel)
+                path_scores = self.get_path_scores(score_channel)
+                vals = []
+                for i, entry in enumerate(self.session.entries):
+                    v = raw[i]
+                    if v is None and entry.path_id is not None:
+                        v = path_scores.get(entry.path_id)
+                    vals.append(float(v) if v is not None else float('nan'))
+                arr = np.array(vals, dtype=np.float32)
+                valid = ~np.isnan(arr)
+                if valid.any():
+                    lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+                    if hi - lo > 1e-8:
+                        arr[valid] = (arr[valid] - lo) / (hi - lo)
+                    else:
+                        arr[valid] = 0.5
+                    arr[~valid] = 0.5
+                    flow.build_score_grid(self.projected_3d, arr)
+                    score_grid = flow._score_grid
+        return flow.find_attractors(score_grid=score_grid)
 
     def get_cluster_texts(self, cluster_id: int) -> List[str]:
         """Return texts belonging to a specific cluster."""
@@ -144,6 +217,8 @@ class AnalysisResult:
         }
         if self.velocity_grid is not None:
             arrays["velocity_grid"] = self.velocity_grid
+        if self.confidence_grid is not None:
+            arrays["confidence_grid"] = self.confidence_grid
         if self.axis_min is not None:
             arrays["axis_min"] = self.axis_min
         if self.axis_max is not None:
@@ -236,6 +311,7 @@ class AnalysisResult:
             cluster_labels=meta.get("cluster_labels", []),
             flow_model_trained=meta.get("flow_model_trained", False),
             velocity_grid=data["velocity_grid"] if "velocity_grid" in data else None,
+            confidence_grid=data["confidence_grid"] if "confidence_grid" in data else None,
             axis_min=data["axis_min"] if "axis_min" in data else None,
             axis_max=data["axis_max"] if "axis_max" in data else None,
             cluster_centroids_3d=data["cluster_centroids_3d"] if "cluster_centroids_3d" in data else None,

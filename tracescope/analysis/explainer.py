@@ -632,13 +632,61 @@ class SemanticExplainer:
         self,
         axis_labels: List[str],
         control_points: List[dict],
+        score_context: list = None,
+        debug: bool = False,
     ) -> str:
         """Multi-point trajectory explanation."""
         user_prompt = prompts.build_path_explain_prompt(
             axis_labels=axis_labels,
             control_points=control_points,
+            score_context=score_context,
         )
+        if debug:
+            print(f"\n{'='*60}")
+            print("PATH EXPLAIN — USER PROMPT")
+            print(f"{'='*60}")
+            print(user_prompt)
+            print(f"{'='*60}\n")
         return self._cached_complete("", user_prompt).strip()
+
+    def explain_attractor(
+        self,
+        axis_labels: List[str],
+        axis_pcts: List[int],
+        cluster_distances: list,
+        nearest_texts: List[str],
+        strength: float,
+        basin_fraction: float,
+        divergence: float,
+        score_info: dict = None,
+        trajectory_explanations: Optional[List[str]] = None,
+        debug: bool = False,
+    ) -> str:
+        """Explain the semantic meaning of a flow attractor."""
+        user_prompt = prompts.build_attractor_explain_prompt(
+            axis_labels=axis_labels,
+            axis_pcts=axis_pcts,
+            cluster_distances=cluster_distances,
+            nearest_texts=nearest_texts,
+            strength=strength,
+            basin_fraction=basin_fraction,
+            divergence=divergence,
+            score_info=score_info,
+            trajectory_explanations=trajectory_explanations,
+        )
+        if debug:
+            print(f"\n{'='*60}")
+            print("ATTRACTOR EXPLAIN — SYSTEM PROMPT")
+            print(f"{'='*60}")
+            print(prompts.ATTRACTOR_EXPLAIN_SYSTEM)
+            print(f"\n{'='*60}")
+            print("ATTRACTOR EXPLAIN — USER PROMPT")
+            print(f"{'='*60}")
+            print(user_prompt)
+            print(f"{'='*60}\n")
+        return self._cached_complete(
+            prompts.ATTRACTOR_EXPLAIN_SYSTEM, user_prompt,
+        ).strip()
 
     def explain_flow(
         self,

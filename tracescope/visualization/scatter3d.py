@@ -152,12 +152,27 @@ def _apply_dark_theme(fig, axis_labels: List[str]) -> None:
     )
 
 
+def _score_to_plotly_colors(values: List[Optional[float]], fallback_color: str = "rgb(128,128,128)") -> List[str]:
+    """Convert score values to plotly color strings using red-yellow-green gradient."""
+    from tracescope.visualization.flow_field import score_colormap
+
+    colors = []
+    for v in values:
+        if v is None:
+            colors.append(fallback_color)
+        else:
+            rgb = score_colormap(np.array([v]))[0]
+            colors.append(f"rgb({int(rgb[0]*255)},{int(rgb[1]*255)},{int(rgb[2]*255)})")
+    return colors
+
+
 def plot_clusters_3d(
     result: AnalysisResult,
     show_path: bool = True,
     marker_size: int = 6,
     path_width: int = 5,
     use_spline: bool = True,
+    color_by_score: Optional[str] = None,
 ):
     """Create a 3D scatter plot with clusters colored and Catmull-Rom spline path.
 
@@ -167,6 +182,8 @@ def plot_clusters_3d(
         marker_size: Size of scatter points.
         path_width: Width of the path line.
         use_spline: Use Catmull-Rom spline (True) or straight lines (False).
+        color_by_score: Optional score channel name to color points by score
+                        instead of cluster. Uses red-yellow-green gradient.
 
     Returns:
         Plotly Figure object.
@@ -178,39 +195,71 @@ def plot_clusters_3d(
     axis_labels = result.axis_info.labels
     n_clusters = result.clusters.n_clusters
 
-    # Scatter points per cluster
-    for c in range(n_clusters):
-        mask = [i for i, l in enumerate(labels) if l == c]
-        if not mask:
-            continue
-        cluster_pts = pts[mask]
-        cluster_texts = [result.session.entries[i].text[:100] for i in mask]
-        cluster_roles = [result.session.entries[i].role for i in mask]
+    if color_by_score and color_by_score in result.score_channels:
+        # ── Score-based coloring ──────────────────────────
+        entry_scores = result.get_entry_scores(color_by_score)
+        path_score_map = result.get_path_scores(color_by_score)
 
+        # For each entry: use entry score if present, else path score, else None
+        final_scores = []
+        for i, e in enumerate(result.session.entries):
+            s = entry_scores[i]
+            if s is None and e.path_id is not None:
+                s = path_score_map.get(e.path_id)
+            final_scores.append(s)
+
+        point_colors = _score_to_plotly_colors(final_scores)
         hover = [
-            f"[{role}] {text}..."
-            for role, text in zip(cluster_roles, cluster_texts)
+            f"[{result.session.entries[i].role}] {result.session.entries[i].text[:100]}... "
+            f"({color_by_score}: {final_scores[i]:.2f})" if final_scores[i] is not None
+            else f"[{result.session.entries[i].role}] {result.session.entries[i].text[:100]}..."
+            for i in range(len(pts))
         ]
-
-        color = CLUSTER_COLORS[c % len(CLUSTER_COLORS)]
-        label = (
-            result.cluster_labels[c]
-            if c < len(result.cluster_labels)
-            else f"Cluster {c}"
-        )
 
         fig.add_trace(
             go.Scatter3d(
-                x=cluster_pts[:, 0],
-                y=cluster_pts[:, 1],
-                z=cluster_pts[:, 2],
+                x=pts[:, 0], y=pts[:, 1], z=pts[:, 2],
                 mode="markers",
-                marker=dict(size=marker_size, color=color, opacity=0.8),
-                name=label,
+                marker=dict(size=marker_size, color=point_colors, opacity=0.8),
+                name=f"Score: {color_by_score}",
                 text=hover,
                 hoverinfo="text",
             )
         )
+    else:
+        # ── Cluster-based coloring (default) ──────────────
+        for c in range(n_clusters):
+            mask = [i for i, l in enumerate(labels) if l == c]
+            if not mask:
+                continue
+            cluster_pts = pts[mask]
+            cluster_texts = [result.session.entries[i].text[:100] for i in mask]
+            cluster_roles = [result.session.entries[i].role for i in mask]
+
+            hover = [
+                f"[{role}] {text}..."
+                for role, text in zip(cluster_roles, cluster_texts)
+            ]
+
+            color = CLUSTER_COLORS[c % len(CLUSTER_COLORS)]
+            label = (
+                result.cluster_labels[c]
+                if c < len(result.cluster_labels)
+                else f"Cluster {c}"
+            )
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=cluster_pts[:, 0],
+                    y=cluster_pts[:, 1],
+                    z=cluster_pts[:, 2],
+                    mode="markers",
+                    marker=dict(size=marker_size, color=color, opacity=0.8),
+                    name=label,
+                    text=hover,
+                    hoverinfo="text",
+                )
+            )
 
     # Path line (Catmull-Rom spline or straight)
     if show_path and len(pts) >= 2:
@@ -219,18 +268,57 @@ def plot_clusters_3d(
         else:
             spline_pts = pts
 
-        fig.add_trace(
-            go.Scatter3d(
-                x=spline_pts[:, 0],
-                y=spline_pts[:, 1],
-                z=spline_pts[:, 2],
-                mode="lines",
-                line=dict(color="rgba(255,255,255,0.7)", width=path_width),
-                name="Path",
-                showlegend=True,
-                hoverinfo="skip",
+        # Color path by score if available
+        if color_by_score and color_by_score in result.score_channels:
+            path_score_map = result.get_path_scores(color_by_score)
+            entry_scores = result.get_entry_scores(color_by_score)
+            # Build per-entry score, falling back to path score
+            per_entry = []
+            for i, e in enumerate(result.session.entries):
+                s = entry_scores[i]
+                if s is None and e.path_id is not None:
+                    s = path_score_map.get(e.path_id)
+                per_entry.append(s if s is not None else 0.5)
+            path_colors = _score_to_plotly_colors(per_entry)
+            # For spline: repeat colors for interpolated points
+            if use_spline and len(per_entry) >= 2:
+                n_seg = len(per_entry) - 1
+                expanded = []
+                for seg_i in range(n_seg):
+                    for j in range(20):
+                        t = j / 20.0
+                        v = per_entry[seg_i] * (1 - t) + per_entry[seg_i + 1] * t
+                        expanded.append(v)
+                expanded.append(per_entry[-1])
+                # Trim to match spline length
+                expanded = expanded[:len(spline_pts)]
+                while len(expanded) < len(spline_pts):
+                    expanded.append(per_entry[-1])
+                path_colors = _score_to_plotly_colors(expanded)
+
+            fig.add_trace(
+                go.Scatter3d(
+                    x=spline_pts[:, 0], y=spline_pts[:, 1], z=spline_pts[:, 2],
+                    mode="lines",
+                    line=dict(color=path_colors, width=path_width),
+                    name="Path",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
             )
-        )
+        else:
+            fig.add_trace(
+                go.Scatter3d(
+                    x=spline_pts[:, 0],
+                    y=spline_pts[:, 1],
+                    z=spline_pts[:, 2],
+                    mode="lines",
+                    line=dict(color="rgba(255,255,255,0.7)", width=path_width),
+                    name="Path",
+                    showlegend=True,
+                    hoverinfo="skip",
+                )
+            )
 
     # Apply dark theme
     _apply_dark_theme(fig, axis_labels)

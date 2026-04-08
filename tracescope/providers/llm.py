@@ -10,7 +10,14 @@ Switch LLM models by passing a different provider:
 
 from __future__ import annotations
 
+import logging
+import time
 from abc import ABC, abstractmethod
+
+log = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+_RETRY_BACKOFF = (2, 5, 10)  # seconds between retries
 
 
 class LLMProvider(ABC):
@@ -39,14 +46,23 @@ class OpenAILLM(LLMProvider):
         return self._model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-        )
-        return response.choices[0].message.content.strip()
+        for attempt in range(_MAX_RETRIES):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                if attempt == _MAX_RETRIES - 1:
+                    raise
+                wait = _RETRY_BACKOFF[attempt]
+                log.warning("OpenAI request failed (attempt %d/%d): %s — "
+                            "retrying in %ds", attempt + 1, _MAX_RETRIES, e, wait)
+                time.sleep(wait)
 
 
 class AnthropicLLM(LLMProvider):
@@ -62,10 +78,19 @@ class AnthropicLLM(LLMProvider):
         return self._model
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
-        response = self._client.messages.create(
-            model=self._model,
-            max_tokens=16000,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        return response.content[0].text.strip()
+        for attempt in range(_MAX_RETRIES):
+            try:
+                response = self._client.messages.create(
+                    model=self._model,
+                    max_tokens=16000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
+                return response.content[0].text.strip()
+            except Exception as e:
+                if attempt == _MAX_RETRIES - 1:
+                    raise
+                wait = _RETRY_BACKOFF[attempt]
+                log.warning("Anthropic request failed (attempt %d/%d): %s — "
+                            "retrying in %ds", attempt + 1, _MAX_RETRIES, e, wait)
+                time.sleep(wait)

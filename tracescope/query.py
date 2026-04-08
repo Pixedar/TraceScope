@@ -74,7 +74,7 @@ class TraceQuery:
                 "sample_texts": sample_texts,
             })
 
-        return {
+        lookup = {
             "axis_labels": axis_labels,
             "axis_ranges": [
                 {"axis": axis_labels[i], "min": axis_mins[i], "max": axis_maxs[i]}
@@ -90,6 +90,25 @@ class TraceQuery:
                 "axis_max": r.axis_max.tolist() if r.axis_max is not None else None,
             },
         }
+
+        # Score channels (only if any exist)
+        score_channels = r.score_channels
+        if score_channels:
+            score_info = {}
+            for ch in score_channels:
+                entry_vals = [v for v in r.get_entry_scores(ch) if v is not None]
+                path_vals = list(r.get_path_scores(ch).values())
+                all_vals = entry_vals + path_vals
+                score_info[ch] = {
+                    "entry_count": len(entry_vals),
+                    "path_count": len(path_vals),
+                    "min": round(min(all_vals), 4) if all_vals else None,
+                    "max": round(max(all_vals), 4) if all_vals else None,
+                    "mean": round(sum(all_vals) / len(all_vals), 4) if all_vals else None,
+                }
+            lookup["score_channels"] = score_info
+
+        return lookup
 
     def get_lookup(self) -> dict:
         """Return the pre-computed lookup table with space metadata."""
@@ -181,15 +200,23 @@ class TraceQuery:
         pts = self._result.projected_3d
         dists = np.linalg.norm(pts - point_3d, axis=1)
         nearest = np.argsort(dists)[:k]
-        return [
-            {
-                "index": int(idx),
-                "text": self._result.session.entries[idx].text,
+        results = []
+        for idx in nearest:
+            idx = int(idx)
+            entry = self._result.session.entries[idx]
+            d = {
+                "index": idx,
+                "text": entry.text,
                 "distance": round(float(dists[idx]), 4),
                 "cluster": self._result.clusters.labels[idx],
             }
-            for idx in nearest
-        ]
+            if entry.scores:
+                d["scores"] = entry.scores
+            return_path_id = entry.path_id
+            if return_path_id is not None and return_path_id in self._result.session.path_scores:
+                d["path_scores"] = self._result.session.path_scores[return_path_id]
+            results.append(d)
+        return results
 
     def _sample_velocity(self, point_3d: np.ndarray) -> Optional[np.ndarray]:
         """Sample velocity from the velocity grid at a 3D point."""
@@ -442,7 +469,72 @@ class TraceQuery:
             **decomposition,
         }
 
-    # ─── Method 4: path_similarity ────────────────────────────────────
+    # ─── Method 4: score_summary ─────────────────────────────────────
+
+    def score_summary(self, channel: str) -> dict:
+        """Get a statistical summary of a score channel across the space.
+
+        Args:
+            channel: Score channel name (e.g. "success", "error_rate").
+
+        Returns:
+            dict with per-cluster and per-path score breakdowns.
+        """
+        r = self._result
+        if channel not in r.score_channels:
+            raise ValueError(f"Score channel '{channel}' not found. "
+                             f"Available: {r.score_channels}")
+
+        entry_scores = r.get_entry_scores(channel)
+        path_score_map = r.get_path_scores(channel)
+
+        # Per-cluster breakdown
+        cluster_stats = []
+        for c in range(r.clusters.n_clusters):
+            indices = [i for i, l in enumerate(r.clusters.labels) if l == c]
+            vals = [entry_scores[i] for i in indices if entry_scores[i] is not None]
+            label = r.cluster_labels[c] if c < len(r.cluster_labels) else f"Cluster {c}"
+            stat = {"cluster": label, "count": len(vals)}
+            if vals:
+                stat.update({
+                    "mean": round(sum(vals) / len(vals), 4),
+                    "min": round(min(vals), 4),
+                    "max": round(max(vals), 4),
+                })
+            cluster_stats.append(stat)
+
+        # Per-path breakdown
+        path_stats = []
+        path_ids = set(e.path_id for e in r.session.entries if e.path_id is not None)
+        for pid in sorted(path_ids):
+            indices = [i for i, e in enumerate(r.session.entries) if e.path_id == pid]
+            entry_vals = [entry_scores[i] for i in indices if entry_scores[i] is not None]
+            path_val = path_score_map.get(pid)
+            path_label = None
+            for i in indices:
+                pl = r.session.entries[i].metadata.get("path_label")
+                if pl:
+                    path_label = pl
+                    break
+            stat = {
+                "path_id": pid,
+                "path_label": path_label or f"Path {pid}",
+                "path_score": path_val,
+                "entry_scores_count": len(entry_vals),
+            }
+            if entry_vals:
+                stat["entry_mean"] = round(sum(entry_vals) / len(entry_vals), 4)
+            path_stats.append(stat)
+
+        return {
+            "channel": channel,
+            "total_entries_with_score": sum(1 for v in entry_scores if v is not None),
+            "total_paths_with_score": len(path_score_map),
+            "cluster_breakdown": cluster_stats,
+            "path_breakdown": path_stats,
+        }
+
+    # ─── Method 5: path_similarity ────────────────────────────────────
 
     def path_similarity(self, path_a: List[str], path_b: List[str]) -> dict:
         """Compare two semantic paths using high-dimensional embedding vectors.
