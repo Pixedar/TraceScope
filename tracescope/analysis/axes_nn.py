@@ -1194,6 +1194,9 @@ def _train_mdn(
 #     import numpy as np
 
     torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(42)
+    torch.use_deterministic_algorithms(False)  # avoid errors on ops without deterministic impl
     S = torch.from_numpy(points.astype(np.float32))
 
     # Build trajectory pairs, skipping path boundaries when multi-path
@@ -1372,11 +1375,20 @@ def _train_rbf(points, kernel="thin_plate_spline", smoothing=0.1, path_ids=None)
     Args:
         points: (N, 3) array of 3D positions (in sequence order).
         kernel: RBF kernel type. Options: "thin_plate_spline" (default),
-                "multiquadric", "cubic", "linear", "gaussian".
+                "cubic", "linear", "quintic".
         smoothing: Regularization (0 = exact interpolation, >0 = smooth).
         path_ids: Optional per-point path IDs for multi-path support.
     """
     from scipy.interpolate import RBFInterpolator
+
+    _SUPPORTED_KERNELS = {"linear", "thin_plate_spline", "cubic", "quintic"}
+    if kernel not in _SUPPORTED_KERNELS:
+        raise ValueError(
+            f"RBF kernel '{kernel}' is not supported. "
+            f"Supported kernels: {', '.join(sorted(_SUPPORTED_KERNELS))}. "
+            f"Kernels like 'multiquadric' and 'gaussian' require an epsilon "
+            f"parameter that is not currently exposed."
+        )
 
     N = len(points)
 

@@ -21,8 +21,11 @@ No extra dependencies required — fetches data directly from HuggingFace API.
 
 import json
 import urllib.request
+from pathlib import Path
 
 from tracescope import TraceScopeConfig, AnalysisPipeline, from_lists, TraceQuery, launch_renderer
+
+_ROOT = Path(__file__).resolve().parent.parent
 
 # ── Load dataset from HuggingFace API ────────────────────────────
 
@@ -145,7 +148,7 @@ session = from_lists(
 pipeline = AnalysisPipeline(config)
 result = pipeline.analyze(
     session,
-    cache_path="examples/cache/swe_agent",
+    cache_path=str(_ROOT / "cache" / "swe_agent"),
     train_flow=True,
 )
 
@@ -164,4 +167,8 @@ if "score_channels" in lookup:
 
 # ── GPU renderer ──────────────────────────────────────────────────
 
-launch_renderer(result, explainer=pipeline.explainer)
+launch_renderer(
+    result,
+    explainer=pipeline.explainer,
+    initial_state={"show_attractors": True},
+)

@@ -174,7 +174,7 @@ class TraceQuery:
         maxs = pts.max(axis=0)
         ranges = maxs - mins
         ranges[ranges == 0] = 1.0
-        pct = ((point_3d - mins) / ranges) * 100
+        pct = np.clip(((point_3d - mins) / ranges) * 100, 0, 100)
         labels = self._result.axis_info.labels
         return {labels[i]: round(float(pct[i]), 1) for i in range(3)}
 
@@ -415,7 +415,13 @@ class TraceQuery:
 
         velocity = self._sample_velocity(pt)
         if velocity is None:
-            raise RuntimeError("No velocity grid available. Run pipeline with train_flow=True.")
+            raise RuntimeError(
+                "No velocity grid available. This can happen if: "
+                "(1) train_flow=False was passed to pipeline.analyze(), "
+                "(2) the flow model training failed silently (check for warnings about "
+                "unsupported kernels or missing PyTorch), or "
+                "(3) the result was loaded from a save that didn't include a velocity grid."
+            )
 
         speed = float(np.linalg.norm(velocity))
         decomposition = self._decompose_vector(pt, velocity, include_nearby=True)
@@ -494,13 +500,13 @@ class TraceQuery:
             indices = [i for i, l in enumerate(r.clusters.labels) if l == c]
             vals = [entry_scores[i] for i in indices if entry_scores[i] is not None]
             label = r.cluster_labels[c] if c < len(r.cluster_labels) else f"Cluster {c}"
-            stat = {"cluster": label, "count": len(vals)}
-            if vals:
-                stat.update({
-                    "mean": round(sum(vals) / len(vals), 4),
-                    "min": round(min(vals), 4),
-                    "max": round(max(vals), 4),
-                })
+            stat = {
+                "cluster": label,
+                "count": len(vals),
+                "mean": round(sum(vals) / len(vals), 4) if vals else None,
+                "min": round(min(vals), 4) if vals else None,
+                "max": round(max(vals), 4) if vals else None,
+            }
             cluster_stats.append(stat)
 
         # Per-path breakdown
@@ -521,9 +527,8 @@ class TraceQuery:
                 "path_label": path_label or f"Path {pid}",
                 "path_score": path_val,
                 "entry_scores_count": len(entry_vals),
+                "entry_mean": round(sum(entry_vals) / len(entry_vals), 4) if entry_vals else None,
             }
-            if entry_vals:
-                stat["entry_mean"] = round(sum(entry_vals) / len(entry_vals), 4)
             path_stats.append(stat)
 
         return {

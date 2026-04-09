@@ -18,7 +18,9 @@ from tracescope import (
     TraceScopeConfig, AnalysisPipeline, from_list, launch_renderer,
 )
 
-_SAMPLE_DIR = Path(__file__).resolve().parent / "sample_data"
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_ROOT = _SCRIPT_DIR.parent
+_SAMPLE_DIR = _SCRIPT_DIR / "sample_data"
 
 print("=== AI & Tech News Headlines ===\n")
 
@@ -38,7 +40,7 @@ result = pipeline.analyze(
     session,
     progress_callback=lambda stage, pct: print(f"  [{stage}] {pct*100:.0f}%"),
     train_flow=True,
-    cache_path="cache/single_path",
+    cache_path=str(_ROOT / "cache" / "single_path"),
 )
 
 print(f"\nAnalysis complete:")

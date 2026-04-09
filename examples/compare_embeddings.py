@@ -10,8 +10,12 @@ Before running:
      OPENAI_API_KEY=sk-...
 """
 
+from pathlib import Path
+
 from tracescope import TraceScopeConfig, AnalysisPipeline, from_list
 from tracescope.providers.embedding import OpenAIEmbedding
+
+_ROOT = Path(__file__).resolve().parent.parent
 
 
 def main():
@@ -34,7 +38,7 @@ def main():
         api_key=config.openai_api_key,
         model="text-embedding-3-large",
     )
-    result_a = pipeline.analyze(session, train_flow=False, cache_path="cache/cmp_large")
+    result_a = pipeline.analyze(session, train_flow=False, cache_path=str(_ROOT / "cache" / "cmp_large"))
     print(f"  Clusters: {result_a.cluster_labels}")
     print(f"  Axes: {result_a.axis_info.labels}")
 
@@ -44,7 +48,7 @@ def main():
         api_key=config.openai_api_key,
         model="text-embedding-3-small",
     )
-    result_b = pipeline.analyze(session, train_flow=False, cache_path="cache/cmp_small")
+    result_b = pipeline.analyze(session, train_flow=False, cache_path=str(_ROOT / "cache" / "cmp_small"))
     print(f"  Clusters: {result_b.cluster_labels}")
     print(f"  Axes: {result_b.axis_info.labels}")
 

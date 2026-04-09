@@ -477,6 +477,17 @@ class AnalysisPipeline:
 
         if train_flow and len(session) >= 5:
             _progress("flow_model", 0.0)
+            if flow_mode == "mdn":
+                try:
+                    import torch  # noqa: F401
+                except ImportError:
+                    import warnings
+                    warnings.warn(
+                        "PyTorch is not installed — MDN flow model cannot be trained. "
+                        "Install PyTorch (`pip install torch`) or use flow_mode='rbf' "
+                        "for a lightweight scipy-based alternative.",
+                        UserWarning, stacklevel=2,
+                    )
             try:
                 from tracescope.analysis.axes_nn import train_models, _state
 
@@ -610,13 +621,23 @@ class AnalysisPipeline:
         if vecs_a is None or vecs_b is None:
             raise ValueError(
                 f"Missing vectors: {model_a}={'found' if vecs_a is not None else 'missing'}, "
-                f"{model_b}={'found' if vecs_b is not None else 'missing'}"
+                f"{model_b}={'found' if vecs_b is not None else 'missing'}. "
+                f"If you loaded results from cache, the vector store is not "
+                f"repopulated — re-run pipeline.analyze() without cache_path "
+                f"to populate the vector store before calling compare_models()."
             )
 
         if len(vecs_a) != len(vecs_b):
             raise ValueError(
                 f"Vector count mismatch: {model_a} has {len(vecs_a)}, "
                 f"{model_b} has {len(vecs_b)}"
+            )
+
+        if vecs_a.shape[1] != vecs_b.shape[1]:
+            raise ValueError(
+                f"Dimension mismatch: {model_a} is {vecs_a.shape[1]}D, "
+                f"{model_b} is {vecs_b.shape[1]}D — cosine similarity is undefined "
+                f"between different embedding spaces."
             )
 
         norms_a = np.linalg.norm(vecs_a, axis=1, keepdims=True)

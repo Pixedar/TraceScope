@@ -26,8 +26,6 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 
 ## Concrete Examples
 
-Real examples from real datasets — the flow field reveals hidden dynamics that static clustering misses.
-
 <details>
 <summary><b>AI & Tech News Headlines: Where is the industry flowing?</b></summary>
 
@@ -102,21 +100,23 @@ python examples/swe_agent.py
 pip install --pre tracescope
 ```
 
-> **Note:** TraceScope is currently in alpha (`0.2.0a1`). The `--pre` flag is required to install pre-release versions.
+> **Note:** TraceScope is currently in alpha (`0.2.0a1`). The `--pre` flag is required to install pre-release versions. If `--pre` pulls beta versions of other packages (e.g., pydantic, ruptures), pin them to stable releases: `pip install --pre tracescope pydantic==2.12.5 ruptures==1.1.10`.
 
 **Lighter variants** (use `--no-deps` to skip the full dependency tree):
 
 ```bash
 # CPU-only — renderer + all features, no PyTorch (RBF flow still works)
+# Note: all results shown in the "Concrete Examples" section were tested
+# using the full GPU PyTorch version, not this CPU-only install.
 pip install --no-deps --pre tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
 
 # API-only — analysis pipeline, no GUI, no PyTorch
 pip install --no-deps --pre tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
-You'll need an OpenAI API key for embeddings and LLM explanations. Set it in a `.env` file or pass it directly:
+An OpenAI API key is **required** for embeddings and LLM explanations. TraceScope will not work without it. Set it in a `.env` file or pass it directly:
 
-```
+```env
 OPENAI_API_KEY=sk-...
 ```
 
@@ -137,27 +137,27 @@ print(f"Clusters: {result.cluster_labels}")
 ```
 
 ### Analyze any list of texts
-Turn any ordered text collection into a semantic trajectory — works best with **20+ entries** for meaningful clusters and flow fields.
+Turn any ordered text collection into a semantic trajectory — works best with **30+ entries** for meaningful clusters and flow fields.
 ```python
 from tracescope import TraceScopeConfig, AnalysisPipeline, from_list
 
 config = TraceScopeConfig()
 
-# News headlines (short example — add more entries for richer flow)
+
 session = from_list([
     "Fed holds rates steady amid inflation concerns",
     "Tech earnings surge on AI demand",
     "Climate summit reaches carbon emissions deal",
     "Housing market cools as mortgage rates rise",
     "Quantum computing startup hits milestone",
-    # ... add more entries for better flow field quality
+    # ... add more entries, to get meangful flow is recommended  to have at least 30+ entries, run examples/ai_news_headlines.py for a demo with 350 synthetic news headlines
 ])
 
 pipeline = AnalysisPipeline(config)
 result = pipeline.analyze(session, train_flow=True, cache_path="cache/headlines")
 ```
 
-> **Tip:** The MDN flow model learns best from **20+ entries** across your paths. With only 5–10 entries the flow field will be sparse. For the richest visualizations, use datasets with 50+ texts or multiple paths via `from_lists()`.
+> **Tip:** The MDN flow model learns best from **30+ entries** across your paths. With only 5–10 entries the flow field will be sparse. For the richest visualizations, use datasets with 50+ texts or multiple paths via `from_lists()`.
 
 ### Visualize
 
@@ -206,7 +206,7 @@ session = from_lists([
     ["Fed holds rates steady", "Tech earnings surge on AI", "Housing market cools"],
     ["Climate summit reaches deal", "Quantum computing milestone", "Mars rover update"],
     ["New vaccine approved", "Hospital staffing crisis", "Mental health funding"],
-    # ... more paths improve flow field quality
+     # ... add more entries, to get meangful flow is recommended  to have at least 30+ entries, check examples dir with arleady prepared datasets 
 ], labels=["Finance", "Science", "Health"])
 
 result = pipeline.analyze(session, train_flow=True, cache_path="cache/multi_path")
@@ -334,8 +334,8 @@ print(lookup["score_channels"])  # {"success": {"mean": 0.67, "min": 0.0, "max":
 
 # Score summary with per-cluster and per-path breakdown
 summary = query.score_summary("success")
-print(summary["cluster_breakdown"])  # [{cluster, count, mean}, ...]
-print(summary["path_breakdown"])     # [{path_label, path_score, entry_mean}, ...]
+print(summary["cluster_breakdown"])  # [{cluster, count, mean, min, max}, ...] (mean/min/max are None when count=0)
+print(summary["path_breakdown"])     # [{path_label, path_score, entry_scores_count, entry_mean}, ...] (entry_mean is None when no entry scores)
 ```
 
 ## Programmatic API — TraceQuery
@@ -510,7 +510,7 @@ result = pipeline.analyze(session,
 ```python
 result = pipeline.analyze(session,
     flow_mode="rbf",
-    rbf_kernel="thin_plate_spline",  # or "multiquadric", "cubic", "linear", "gaussian"
+    rbf_kernel="thin_plate_spline",  # or "cubic", "linear", "quintic"
     rbf_smoothing=0.1,               # 0 = exact interpolation, higher = smoother
 )
 ```
@@ -528,7 +528,7 @@ result = pipeline.analyze(session, cache_path="results/my_analysis")
 # Second run — loads instantly if texts and embedding model match
 result = pipeline.analyze(session, cache_path="results/my_analysis")
 
-# Manual save/load
+# Manual save/load (parent directories are created automatically)
 result.save_result("results/my_analysis")
 loaded = AnalysisResult.load_result("results/my_analysis")
 ```

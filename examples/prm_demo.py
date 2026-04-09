@@ -89,7 +89,7 @@ result = pipeline.analyze(
     session,
     progress_callback=lambda stage, pct: print(f"  [{stage}] {pct*100:.0f}%"),
     train_flow=True,
-    cache_path="cache/prm_demo",
+    cache_path=str(_ROOT / "cache" / "prm_demo"),
     param_range=[186, 194, 202],
 )
 

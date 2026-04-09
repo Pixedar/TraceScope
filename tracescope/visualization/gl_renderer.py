@@ -2,6 +2,13 @@
 GPU-accelerated 3D renderer with interactive controls — faithful port of
 Android's My3DScatterRenderer.java + FlowFieldSystem.java + DashboardFragment.
 
+WARNING — Import order matters on Windows:
+  Do NOT import this module before running pipeline.analyze() (which uses
+  ChromaDB). Loading OpenGL libraries (via vispy/PyOpenGL) before the
+  ChromaDB Rust backend can cause an access-violation segfault on Windows.
+  Use the lazy launch_renderer() wrapper in tracescope/__init__.py instead
+  of importing this module directly.
+
 GPU rendering (vispy + OpenGL):
   - Flow halo particles: circular discard, pow(1.6) alpha falloff, heat bloom
   - Cluster points: vibrant boost (*1.3 + 0.1), centre-lit spherical gradient

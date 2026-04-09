@@ -228,6 +228,7 @@ class AnalysisResult:
         if self.cluster_centroids_3d is not None:
             arrays["cluster_centroids_3d"] = self.cluster_centroids_3d
 
+        base.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(str(base) + ".npz", **arrays)
 
         # ── JSON sidecar ───────────────────────────────
@@ -299,6 +300,15 @@ class AnalysisResult:
             max_point_idx=ai.get("max_point_idx", []),
             min_cluster_idx=ai.get("min_cluster_idx", []),
             max_cluster_idx=ai.get("max_cluster_idx", []),
+        )
+
+        import warnings
+        warnings.warn(
+            "AnalysisResult.load_result() does not restore the fitted UMAP/t-SNE "
+            "reducer. TraceQuery projections (query_flow_at, explain_path, etc.) "
+            "will use k-NN interpolation instead of the original transform. "
+            "For highest accuracy, use pipeline.analyze() with cache_path.",
+            UserWarning, stacklevel=2,
         )
 
         return cls(

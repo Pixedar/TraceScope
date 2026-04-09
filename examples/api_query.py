@@ -10,9 +10,13 @@ Before running:
      OPENAI_API_KEY=sk-...
 """
 
+from pathlib import Path
+
 from tracescope import (
     TraceScopeConfig, AnalysisPipeline, from_list, from_lists, TraceQuery,
 )
+
+_ROOT = Path(__file__).resolve().parent.parent
 
 
 def single_path_api():
@@ -43,7 +47,7 @@ def single_path_api():
         session,
         progress_callback=lambda stage, pct: print(f"  [{stage}] {pct*100:.0f}%"),
         train_flow=True,
-        cache_path="cache/api_single",
+        cache_path=str(_ROOT / "cache" / "api_single"),
     )
 
     query = TraceQuery(result, pipeline.embedding_provider, pipeline.explainer)
@@ -85,7 +89,7 @@ def multi_path_api():
     print(f"Imported {len(session)} entries across 3 paths")
 
     pipeline = AnalysisPipeline(config)
-    result = pipeline.analyze(session, train_flow=True, cache_path="cache/api_multi")
+    result = pipeline.analyze(session, train_flow=True, cache_path=str(_ROOT / "cache" / "api_multi"))
 
     query = TraceQuery(result, pipeline.embedding_provider, pipeline.explainer)
     _run_queries(query)

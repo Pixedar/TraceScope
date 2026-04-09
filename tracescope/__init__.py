@@ -53,12 +53,17 @@ def launch_dashboard(*args, **kwargs):
 
 
 def launch_renderer(*args, **kwargs):
-    """Lazy-loaded GPU renderer launcher (imports vispy only when called)."""
+    """Lazy-loaded GPU renderer launcher (imports vispy only when called).
+
+    This must be called AFTER pipeline.analyze() completes. On Windows,
+    importing gl_renderer (which loads OpenGL) before ChromaDB's Rust
+    backend can cause a segfault. This lazy wrapper ensures correct ordering.
+    """
     from tracescope.visualization.gl_renderer import launch_renderer as _launch
     return _launch(*args, **kwargs)
 
 
-__version__ = "0.2.0a1"
+__version__ = "0.2.0a2"
 
 __all__ = [
     "TraceScopeConfig",
