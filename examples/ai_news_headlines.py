@@ -54,7 +54,6 @@ launch_renderer(
     dataset_name="AI & Tech News Headlines",
     initial_state={
         "speed": 1.1,
-        "show_attractors": True,
         "flow_color": "cluster",
     },
 )

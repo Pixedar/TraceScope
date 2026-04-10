@@ -97,10 +97,10 @@ python examples/swe_agent.py
 
 ```bash
 # Full install — GPU renderer, MDN flow models, all LLM providers
-pip install --pre tracescope
+pip install tracescope==0.2.0a2
 ```
 
-> **Note:** TraceScope is currently in alpha (`0.2.0a1`). The `--pre` flag is required to install pre-release versions. If `--pre` pulls beta versions of other packages (e.g., pydantic, ruptures), pin them to stable releases: `pip install --pre tracescope pydantic==2.12.5 ruptures==1.1.10`.
+> **Note:** TraceScope is currently in alpha. Pinning the exact version (`==0.2.0a2`) tells pip to install this pre-release without using the global `--pre` flag, which would otherwise pull beta/RC versions of other dependencies.
 
 **Lighter variants** (use `--no-deps` to skip the full dependency tree):
 
@@ -108,10 +108,10 @@ pip install --pre tracescope
 # CPU-only — renderer + all features, no PyTorch (RBF flow still works)
 # Note: all results shown in the "Concrete Examples" section were tested
 # using the full GPU PyTorch version, not this CPU-only install.
-pip install --no-deps --pre tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
+pip install --no-deps tracescope==0.2.0a2 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
 
 # API-only — analysis pipeline, no GUI, no PyTorch
-pip install --no-deps --pre tracescope && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
+pip install --no-deps tracescope==0.2.0a2 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
 An OpenAI API key is **required** for embeddings and LLM explanations. TraceScope will not work without it. Set it in a `.env` file or pass it directly:
