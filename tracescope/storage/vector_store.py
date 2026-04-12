@@ -8,12 +8,17 @@ can be embedded with different models and compared.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import List, Optional
 
 import numpy as np
 import chromadb
 
 logger = logging.getLogger(__name__)
+
+# ChromaDB's Rust backend is not thread-safe for concurrent initialization.
+# Serialize all PersistentClient creation to avoid segfaults / AttributeErrors.
+_chromadb_init_lock = threading.Lock()
 
 
 class VectorStore:
@@ -24,7 +29,8 @@ class VectorStore:
     """
 
     def __init__(self, persist_dir: str):
-        self._client = chromadb.PersistentClient(path=persist_dir)
+        with _chromadb_init_lock:
+            self._client = chromadb.PersistentClient(path=persist_dir)
 
     @staticmethod
     def _collection_name(session_id: str, model_name: str) -> str:

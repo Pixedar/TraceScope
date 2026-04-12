@@ -201,14 +201,14 @@ class AnalysisPipeline:
         session: TraceSession,
         progress_callback: Optional[Callable[[str, float], None]] = None,
         train_flow: bool = True,
-        flow_mode: str = "mdn",
+        flow_mode: Optional[str] = None,
         n_clusters: Optional[int] = None,
-        mdn_hidden: int = 100,
-        mdn_iters: int = 8000,
-        velocity_grid_size: int = 40,
+        mdn_hidden: Optional[int] = None,
+        mdn_iters: Optional[int] = None,
+        velocity_grid_size: Optional[int] = None,
         cache_path: Optional[str] = None,
-        rbf_kernel: str = "thin_plate_spline",
-        rbf_smoothing: float = 0.1,
+        rbf_kernel: Optional[str] = None,
+        rbf_smoothing: Optional[float] = None,
         min_k: int = 3,
         param_range: Optional[list] = None,
     ) -> AnalysisResult:
@@ -231,7 +231,7 @@ class AnalysisPipeline:
                 the entire pipeline is skipped and the cached result is returned
                 instantly. On completion, the result is saved to this path.
             rbf_kernel: RBF kernel type (default "thin_plate_spline"). Options:
-                "thin_plate_spline", "multiquadric", "cubic", "linear", "gaussian".
+                "thin_plate_spline", "cubic", "linear", "quintic".
             rbf_smoothing: RBF regularization (default 0.1). 0 = exact interpolation.
             min_k: Minimum number of clusters for auto-selection (default 3).
                 The silhouette search starts from this value. Range: 2-10.
@@ -246,12 +246,27 @@ class AnalysisPipeline:
 
         # ── Input validation ─────────────────────────────────────────
         if len(session) == 0:
-            raise ValueError("Session has no entries. Provide at least 3 texts.")
-        if len(session) < 3:
+            raise ValueError("Session has no entries. Provide at least 5 texts.")
+        if len(session) < 5:
             raise ValueError(
-                f"Need at least 3 entries for analysis, got {len(session)}. "
-                f"Clustering and dimension reduction require a minimum sample size."
+                f"Need at least 5 entries for analysis, got {len(session)}. "
+                f"Clustering, dimension reduction, and flow models require "
+                f"a minimum sample size of 5."
             )
+
+        # ── Fall back to config values for unset parameters ──────────
+        if flow_mode is None:
+            flow_mode = self._config.flow_mode
+        if mdn_hidden is None:
+            mdn_hidden = self._config.mdn_hidden
+        if mdn_iters is None:
+            mdn_iters = self._config.mdn_iters
+        if velocity_grid_size is None:
+            velocity_grid_size = self._config.velocity_grid_size
+        if rbf_kernel is None:
+            rbf_kernel = self._config.rbf_kernel
+        if rbf_smoothing is None:
+            rbf_smoothing = self._config.rbf_smoothing
 
         # ── Check full-result cache ───────────────────────────────────
         if cache_path is not None:
@@ -266,7 +281,7 @@ class AnalysisPipeline:
                         _meta = json.load(_f)
                     # Build fingerprint from current inputs
                     _texts = sorted(e.text for e in session.entries)
-                    _blob = json.dumps(_texts, sort_keys=True) + "|" + self._embedding_provider.model_name()
+                    _blob = json.dumps(_texts, sort_keys=True) + "|" + self._embedding_provider.model_name() + "|" + flow_mode
                     _fp = _hl.sha256(_blob.encode("utf-8")).hexdigest()
                     if _meta.get("fingerprint") == _fp:
                         logger.info("Full result cache hit — skipping pipeline")
@@ -591,6 +606,7 @@ class AnalysisPipeline:
             max_cluster_distance=max_cluster_distance,
             fitted_reducer=fitted_reducer,
             cache_path=cache_path,
+            flow_mode=flow_mode,
         )
 
         # ── Save to full-result cache ─────────────────────────────────

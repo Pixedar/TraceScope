@@ -531,9 +531,11 @@ class TraceQuery:
             }
             path_stats.append(stat)
 
+        all_vals = [v for v in entry_scores if v is not None]
         return {
             "channel": channel,
-            "total_entries_with_score": sum(1 for v in entry_scores if v is not None),
+            "total_entries_with_score": len(all_vals),
+            "overall_mean": round(sum(all_vals) / len(all_vals), 4) if all_vals else None,
             "total_paths_with_score": len(path_score_map),
             "cluster_breakdown": cluster_stats,
             "path_breakdown": path_stats,

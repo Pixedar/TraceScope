@@ -97,7 +97,7 @@ python examples/swe_agent.py
 
 ```bash
 # Full install — GPU renderer, MDN flow models, all LLM providers
-pip install tracescope==0.2.0a2
+pip install tracescope==0.2.0a3
 ```
 
 > **Note:** TraceScope is currently in alpha. Pinning the exact version (`==0.2.0a2`) tells pip to install this pre-release without using the global `--pre` flag, which would otherwise pull beta/RC versions of other dependencies.
@@ -108,10 +108,15 @@ pip install tracescope==0.2.0a2
 # CPU-only — renderer + all features, no PyTorch (RBF flow still works)
 # Note: all results shown in the "Concrete Examples" section were tested
 # using the full GPU PyTorch version, not this CPU-only install.
-pip install --no-deps tracescope==0.2.0a2 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
+pip install --no-deps tracescope==0.2.0a3 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
 
 # API-only — analysis pipeline, no GUI, no PyTorch
-pip install --no-deps tracescope==0.2.0a2 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
+pip install --no-deps tracescope==0.2.0a3 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
+```
+
+**Linux users** — install the Qt platform dependency (required for the 3D renderer):
+```bash
+sudo apt-get install libxcb-xinerama0   # Debian/Ubuntu
 ```
 
 An OpenAI API key is **required** for embeddings and LLM explanations. TraceScope will not work without it. Set it in a `.env` file or pass it directly:

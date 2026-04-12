@@ -3139,6 +3139,12 @@ def launch_renderer(result, particle_grid=40, base_size=28.0,
                          flow_color (str): 'speed'|'cluster'|'entropy' or 'score:<channel>'
                          show_points (bool): show data point markers
     """
+    from tracescope.models.analysis import AnalysisResult
+    if not isinstance(result, AnalysisResult):
+        raise TypeError(
+            f"launch_renderer() requires an AnalysisResult from pipeline.analyze(), "
+            f"got {type(result).__name__}."
+        )
     _ensure_viable_backend()
     renderer = FlowRenderer(result, particle_grid=particle_grid,
                              base_size=base_size, window_size=window_size,

@@ -157,3 +157,6 @@ class TraceSession:
 
     def __len__(self) -> int:
         return len(self.entries)
+
+    def __iter__(self):
+        return iter(self.entries)

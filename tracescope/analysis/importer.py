@@ -360,6 +360,24 @@ def auto_import(
     text = path.read_text(encoding="utf-8")
     default_label = label or path.stem
 
+    # CSV / TSV files — each row's first text column becomes one entry
+    if path.suffix in (".csv", ".tsv"):
+        import csv
+        dialect = csv.Sniffer().sniff(text[:4096]) if path.suffix == ".csv" else None
+        delimiter = "\t" if path.suffix == ".tsv" else (dialect.delimiter if dialect else ",")
+        reader = csv.reader(text.splitlines(), delimiter=delimiter)
+        rows = list(reader)
+        if not rows:
+            raise ValueError(f"Empty CSV file: {file_path}")
+        # Skip header if first row looks non-textual (all short tokens)
+        first = rows[0]
+        has_header = len(rows) > 1 and all(len(c.strip()) < 40 for c in first)
+        data_rows = rows[1:] if has_header else rows
+        texts_list = [row[0].strip() for row in data_rows if row and row[0].strip()]
+        if not texts_list:
+            raise ValueError(f"No text entries found in CSV: {file_path}")
+        return from_list(texts_list, label=default_label, session_id=session_id)
+
     if path.suffix == ".json":
         data = json.loads(text)
 

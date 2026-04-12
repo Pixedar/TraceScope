@@ -90,6 +90,7 @@ class AnalysisResult:
     cluster_centroids_3d: Optional[np.ndarray] = None # (K,3) cluster centers
     max_cluster_distance: float = 1.0                 # max pairwise dist between centroids
     cache_path: Optional[str] = None                  # base cache path for attractor caching
+    flow_mode: str = "mdn"                             # flow model type used ("mdn" or "rbf")
 
     @property
     def n_entries(self) -> int:
@@ -189,12 +190,12 @@ class AnalysisResult:
         }
 
     def fingerprint(self) -> str:
-        """Compute a fingerprint from (sorted texts + embedding_model).
+        """Compute a fingerprint from (sorted texts + embedding_model + flow_mode).
 
         Used to detect when cache is stale.
         """
         texts = sorted(e.text for e in self.session.entries)
-        blob = json.dumps(texts, sort_keys=True) + "|" + self.embedding_model
+        blob = json.dumps(texts, sort_keys=True) + "|" + self.embedding_model + "|" + self.flow_mode
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     def save_result(self, path: str):
@@ -252,6 +253,7 @@ class AnalysisResult:
             "cluster_labels": self.cluster_labels,
             "flow_model_trained": self.flow_model_trained,
             "max_cluster_distance": self.max_cluster_distance,
+            "flow_mode": self.flow_mode,
         }
 
         with open(str(base) + ".json", "w", encoding="utf-8") as f:
@@ -326,4 +328,5 @@ class AnalysisResult:
             axis_max=data["axis_max"] if "axis_max" in data else None,
             cluster_centroids_3d=data["cluster_centroids_3d"] if "cluster_centroids_3d" in data else None,
             max_cluster_distance=meta.get("max_cluster_distance", 1.0),
+            flow_mode=meta.get("flow_mode", "mdn"),
         )

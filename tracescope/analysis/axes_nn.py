@@ -1193,10 +1193,12 @@ def _train_mdn(
     import torch, torch.nn as nn, torch.optim as optim, torch.nn.functional as F
 #     import numpy as np
 
+    np.random.seed(42)
     torch.manual_seed(42)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(42)
-    torch.use_deterministic_algorithms(False)  # avoid errors on ops without deterministic impl
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     S = torch.from_numpy(points.astype(np.float32))
 
     # Build trajectory pairs, skipping path boundaries when multi-path
