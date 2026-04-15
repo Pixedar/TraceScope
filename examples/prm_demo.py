@@ -3,9 +3,20 @@ Example: PRM800K Math Reasoning Chains
 =======================================
 Visualize math reasoning chains from the PRM800K dataset.
 
-Uses the included sample_data/prm_demo_paths.json and loads key score
-channels: prm_rating (per-step), solved (per-path outcome),
-mean_prm_rating (path-level quality), and found_error (per-path).
+Uses the included sample_data/prm_demo_paths.json and loads four
+complementary score channels:
+
+  solved (per-path, binary)     — did the chain reach the correct answer?
+                                  default flow coloring: red=fail, green=success
+  mean_prm_rating (per-path)    — continuous path quality signal
+  min_prm_rating (per-path)     — "weakest link": did any step get a bad rating?
+                                  orthogonal to 'solved' — a path can be solved
+                                  with a shaky step, or fail with all-good steps
+  path_length (per-path)        — reasoning effort / complexity (3–41 steps)
+
+found_error is intentionally omitted: it is perfectly complementary to
+'solved' (found_error + solved = 1 for every path) so coloring by it
+would only flip red<->green without new information.
 
 Dataset: MIT license
 Source:  https://github.com/openai/prm800k
@@ -16,12 +27,17 @@ Before running:
      OPENAI_API_KEY=sk-...
 """
 
+import argparse
 import json
 from pathlib import Path
 
 from tracescope import (
     TraceScopeConfig, AnalysisPipeline, from_lists, launch_renderer,
 )
+
+parser = argparse.ArgumentParser(description="PRM800K Math Reasoning example")
+parser.add_argument("--mdn", action="store_true", help="Use MDN flow model instead of RBF")
+args = parser.parse_args()
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,8 +57,8 @@ if isinstance(raw_path_scores, list):
 else:
     path_scores = {int(k): v for k, v in raw_path_scores.items()}
 
-# Keep the most important score channels
-_KEEP_CHANNELS = {"prm_rating", "solved", "mean_prm_rating", "found_error"}
+# Keep four complementary score channels (see module docstring)
+_KEEP_CHANNELS = {"solved", "mean_prm_rating", "min_prm_rating", "path_length"}
 
 # Filter entry_scores to keep only relevant channels
 filtered_entry_scores = []
@@ -84,12 +100,16 @@ print(f"Imported {len(session)} entries across {n_paths} paths from '{payload_pa
 if score_channels:
     print(f"  Score channels: {score_channels}")
 
+_flow_mode = "mdn" if args.mdn else "rbf"
+_cache_suffix = "" if args.mdn else "_rbf"
+
 pipeline = AnalysisPipeline(config)
 result = pipeline.analyze(
     session,
     progress_callback=lambda stage, pct: print(f"  [{stage}] {pct*100:.0f}%"),
     train_flow=True,
-    cache_path=str(_ROOT / "cache" / "prm_demo"),
+    flow_mode=_flow_mode,
+    cache_path=str(_ROOT / "cache" / f"prm_demo{_cache_suffix}"),
     param_range=[186, 194, 202],
 )
 
@@ -107,7 +127,8 @@ launch_renderer(
     initial_state={
         "speed": 2.5,
         "show_attractors": True,
-        "flow_color": "score:found_error",
+        # Intuitive default coloring: red = failure, green = solved
+        "flow_color": "score:solved",
         "sensitivity": 0.01,
     },
 )

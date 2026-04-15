@@ -83,6 +83,18 @@ class TraceScopeConfig:
         velocity_grid_size: 3D velocity grid resolution (20-60, default 40).
         rbf_kernel: RBF kernel type (default "thin_plate_spline").
         rbf_smoothing: RBF regularization (default 0.1).
+        deterministic: Whether to seed all RNGs for reproducible results.
+                       Default: True. Set to False to allow non-deterministic
+                       training (may explore different flow topologies).
+        seed: Global integer seed used by every randomized stage of the
+              pipeline when `deterministic=True` — MDN flow training
+              (torch + numpy), KMeans clustering, and UMAP/t-SNE dimension
+              reduction. Default: 42. Change this to explore alternative
+              flow topologies / cluster layouts / axis alignments without
+              disabling determinism entirely. Ignored when
+              `deterministic=False` (in that case every stage picks its
+              own random seed). The seed is part of the full-result cache
+              fingerprint, so changing it triggers a fresh pipeline run.
     """
 
     openai_api_key: Optional[str] = None
@@ -100,6 +112,8 @@ class TraceScopeConfig:
     velocity_grid_size: int = 40
     rbf_kernel: str = "thin_plate_spline"
     rbf_smoothing: float = 0.1
+    deterministic: bool = True
+    seed: int = 42
 
     def __post_init__(self):
         # Load .env before checking env vars

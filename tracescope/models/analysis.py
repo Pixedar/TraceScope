@@ -91,6 +91,8 @@ class AnalysisResult:
     max_cluster_distance: float = 1.0                 # max pairwise dist between centroids
     cache_path: Optional[str] = None                  # base cache path for attractor caching
     flow_mode: str = "mdn"                             # flow model type used ("mdn" or "rbf")
+    seed: int = 42                                     # global seed used by every randomized stage
+    deterministic: bool = True                         # whether RNGs were seeded this run
 
     @property
     def n_entries(self) -> int:
@@ -190,12 +192,44 @@ class AnalysisResult:
         }
 
     def fingerprint(self) -> str:
-        """Compute a fingerprint from (sorted texts + embedding_model + flow_mode).
+        """Compute a fingerprint from (texts + embedding_model + flow_mode
+        + score channel names [+ seed]).
 
-        Used to detect when cache is stale.
+        Score channels are included so that changing the channel set
+        (e.g. dropping a score or adding a new one) invalidates the
+        cache — otherwise a cached result would be loaded with a stale
+        score layout.
+
+        Backward-compat: when run with the historical defaults
+        (deterministic=True AND seed=42) the seed is *omitted* from
+        the fingerprint, producing the exact same hash as pre-seed
+        versions of TraceScope.  This keeps existing cached results
+        valid bit-for-bit on disk, so users who never touch the seed
+        don't need to recompute anything.  Non-default seeds and
+        non-deterministic runs append a seed suffix, giving each
+        alternate run its own distinct cached result.
         """
         texts = sorted(e.text for e in self.session.entries)
-        blob = json.dumps(texts, sort_keys=True) + "|" + self.embedding_model + "|" + self.flow_mode
+        score_channels = sorted(self.session.score_channels)
+        is_default_seed = bool(self.deterministic) and int(self.seed) == 42
+        if is_default_seed:
+            blob = (
+                json.dumps(texts, sort_keys=True) + "|"
+                + self.embedding_model + "|"
+                + self.flow_mode + "|"
+                + json.dumps(score_channels, sort_keys=True)
+            )
+        else:
+            seed_key = (
+                f"{int(self.seed)}" if self.deterministic else "nondet"
+            )
+            blob = (
+                json.dumps(texts, sort_keys=True) + "|"
+                + self.embedding_model + "|"
+                + self.flow_mode + "|"
+                + json.dumps(score_channels, sort_keys=True) + "|"
+                + seed_key
+            )
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     def save_result(self, path: str):
@@ -254,6 +288,8 @@ class AnalysisResult:
             "flow_model_trained": self.flow_model_trained,
             "max_cluster_distance": self.max_cluster_distance,
             "flow_mode": self.flow_mode,
+            "seed": int(self.seed),
+            "deterministic": bool(self.deterministic),
         }
 
         with open(str(base) + ".json", "w", encoding="utf-8") as f:
@@ -329,4 +365,6 @@ class AnalysisResult:
             cluster_centroids_3d=data["cluster_centroids_3d"] if "cluster_centroids_3d" in data else None,
             max_cluster_distance=meta.get("max_cluster_distance", 1.0),
             flow_mode=meta.get("flow_mode", "mdn"),
+            seed=int(meta.get("seed", 42)),
+            deterministic=bool(meta.get("deterministic", True)),
         )

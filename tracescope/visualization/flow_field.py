@@ -725,7 +725,7 @@ class FlowFieldSystem:
 
     # Bump this version when the attractor detection algorithm changes
     # to auto-invalidate cached results.
-    _ATTRACTOR_CACHE_VERSION = 15
+    _ATTRACTOR_CACHE_VERSION = 18
 
     @staticmethod
     def _sensitivity_params(s: float) -> dict:
@@ -1202,6 +1202,226 @@ class FlowFieldSystem:
                 'mean_score': mean_score,
             })
 
+        # ═══════════════════════════════════════════════════
+        # STAGE 4: Vortex attractor detection (supplementary)
+        #
+        # Occupancy-based detection (stages 1-3) misses vortex centers
+        # because particles ORBIT around the center rather than sitting
+        # on it.  RBF flow fields often create vortices that are the
+        # true global attractors (probes get trapped there forever).
+        #
+        # Detection: find grid cells where the flow is nearly zero but
+        # the curl (vorticity) is high and divergence is negative
+        # (spiral-in).  Then verify with a short probe simulation that
+        # a particle actually gets trapped.
+        # ═══════════════════════════════════════════════════
+
+        # Curl magnitude
+        dvz_dy = np.gradient(vg[:, :, :, 2], axis=1)
+        dvy_dz = np.gradient(vg[:, :, :, 1], axis=2)
+        dvx_dz = np.gradient(vg[:, :, :, 0], axis=2)
+        dvz_dx = np.gradient(vg[:, :, :, 2], axis=0)
+        dvy_dx = np.gradient(vg[:, :, :, 1], axis=0)
+        dvx_dy = np.gradient(vg[:, :, :, 0], axis=1)
+        curl_mag = np.sqrt(
+            (dvz_dy - dvy_dz) ** 2 +
+            (dvx_dz - dvz_dx) ** 2 +
+            (dvy_dx - dvx_dy) ** 2
+        )
+
+        # Vortex score: high curl, low speed, negative divergence
+        speed_30 = max(float(np.percentile(speed[valid], 30)), 1e-8)
+        slow_mask = valid & (speed < speed_30) & (divergence < 0)
+        vortex_score = np.zeros_like(speed)
+        vortex_score[slow_mask] = (
+            curl_mag[slow_mask] / (speed[slow_mask] + 1e-6)
+            * (-divergence[slow_mask])
+        )
+
+        if float(np.max(vortex_score)) > 0:
+            # Find vortex peaks
+            vortex_local_max = maximum_filter(vortex_score, size=5)
+            is_vortex = (vortex_score == vortex_local_max) & (vortex_score > 0)
+            vortex_peaks_arr = np.argwhere(is_vortex)
+
+            if len(vortex_peaks_arr) > 0:
+                vp_scores = np.array([vortex_score[tuple(p)] for p in vortex_peaks_arr])
+                vp_order = np.argsort(-vp_scores)
+
+                # Only consider strong vortex candidates (top 10%, at least score > 1.0)
+                vp_thresh = max(float(np.percentile(vp_scores, 90)), 1.0)
+
+                n_vortex_added = 0
+                for vpi in vp_order:
+                    if vp_scores[vpi] < vp_thresh:
+                        break
+                    if n_vortex_added >= 3:  # max 3 vortex attractors
+                        break
+
+                    vpc = vortex_peaks_arr[vpi]
+                    vi, vj, vk = int(vpc[0]), int(vpc[1]), int(vpc[2])
+
+                    # Skip if too close to an existing attractor (within 4 cells)
+                    vpos_world = np.array([
+                        self.axis_min[0] + vi / (G - 1) * self.span[0],
+                        self.axis_min[1] + vj / (G - 1) * self.span[1],
+                        self.axis_min[2] + vk / (G - 1) * self.span[2],
+                    ], dtype=np.float32)
+
+                    too_close = False
+                    for existing in attractors_out:
+                        ep = existing['position']
+                        # Convert to grid distance
+                        edist = np.linalg.norm(
+                            (vpos_world - ep) / self.span * (G - 1)
+                        )
+                        if edist < 4:
+                            too_close = True
+                            break
+                    if too_close:
+                        continue
+
+                    # Verify: simulate a probe from nearby and check it gets trapped.
+                    # "Trapped" means the probe stays confined in a small region —
+                    # either reaching near-zero speed OR orbiting tightly (vortex).
+                    # We check confinement by comparing the bounding box of the
+                    # last 100 steps to the grid cell size.
+                    cell_size = float(np.mean(self.span / (G - 1)))
+                    confinement_radius = cell_size * 3  # trapped if last 100 steps within 3 cells
+
+                    def _probe_is_trapped(start_pos, n_steps=1000):
+                        """Simulate probe and check if it gets confined."""
+                        p = start_pos.copy()
+                        history = []
+                        for step in range(n_steps):
+                            pv = self.sample_velocity(p[0], p[1], p[2])
+                            ps = float(np.linalg.norm(pv))
+                            if ps < 1e-7:
+                                return True, p  # dead stop
+                            p = p + pv * self.DT
+                            p = np.clip(p, self.axis_min, self.axis_max)
+                            if step >= n_steps - 200:
+                                history.append(p.copy())
+                        if len(history) < 50:
+                            return False, p
+                        hist = np.array(history)
+                        extent = hist.max(axis=0) - hist.min(axis=0)
+                        max_extent = float(np.max(extent))
+                        return max_extent < confinement_radius, p
+
+                    probe_start = vpos_world.copy() + self.span / (G - 1) * 3
+                    probe_start = np.clip(probe_start, self.axis_min, self.axis_max)
+                    trapped, final_probe = _probe_is_trapped(probe_start)
+
+                    if not trapped:
+                        # Try from opposite side
+                        probe_start2 = vpos_world.copy() - self.span / (G - 1) * 3
+                        probe_start2 = np.clip(probe_start2, self.axis_min, self.axis_max)
+                        trapped, final_probe = _probe_is_trapped(probe_start2)
+
+                    if not trapped:
+                        continue
+
+                    # Use the center of the final orbit as the attractor position
+                    # (run another short sim to get the centroid)
+                    centroid_pts = []
+                    p = final_probe.copy()
+                    for _ in range(200):
+                        pv = self.sample_velocity(p[0], p[1], p[2])
+                        p = p + pv * self.DT
+                        p = np.clip(p, self.axis_min, self.axis_max)
+                        centroid_pts.append(p.copy())
+                    final_pos = np.mean(centroid_pts, axis=0).astype(np.float32)
+
+                    # Build basin using the SAME Stage 3 flood-fill logic
+                    # so vortex basins have organic shapes, not cubes.
+                    fi = int(np.clip(
+                        (final_pos[0] - self.axis_min[0]) / self.span[0] * (G - 1) + 0.5,
+                        0, G - 1))
+                    fj = int(np.clip(
+                        (final_pos[1] - self.axis_min[1]) / self.span[1] * (G - 1) + 0.5,
+                        0, G - 1))
+                    fk = int(np.clip(
+                        (final_pos[2] - self.axis_min[2]) / self.span[2] * (G - 1) + 0.5,
+                        0, G - 1))
+
+                    # Speed gate: same as Stage 3
+                    sl = tuple(slice(max(0, c - 1), min(G, c + 2))
+                               for c in (fi, fj, fk))
+                    peak_spd = float(np.mean(speed[sl]))
+                    spd_gate = max(peak_spd * sp['speed_gate_mult'],
+                                   speed_ref * 0.08)
+                    basin_slow = speed <= spd_gate
+
+                    peak_bs_v = float(basin_score[fi, fj, fk])
+                    local_thresh_v = max(peak_bs_v * sp['basin_thresh_pct'],
+                                         abs_basin_floor)
+
+                    max_basin_cells = max(int(n_valid * sp['max_basin_frac']), 20)
+                    basin_mask = np.zeros((G, G, G), dtype=bool)
+                    for _tighten in range(8):
+                        basin_candidates = (
+                            (basin_score >= local_thresh_v) & valid
+                            & (~claimed) & basin_slow
+                        )
+                        basin_labeled_v, _ = label(basin_candidates)
+                        peak_label_v = basin_labeled_v[fi, fj, fk]
+                        if peak_label_v == 0:
+                            break
+                        basin_mask = basin_labeled_v == peak_label_v
+                        bsz = int(np.sum(basin_mask))
+                        if bsz <= max_basin_cells:
+                            break
+                        local_thresh_v = local_thresh_v + (
+                            peak_bs_v - local_thresh_v) * 0.3
+
+                    basin_size = int(np.sum(basin_mask))
+                    if basin_size < 3:
+                        # Fallback: very small basin from nearby convergent cells
+                        basin_mask = np.zeros((G, G, G), dtype=bool)
+                        for di in range(-1, 2):
+                            for dj in range(-1, 2):
+                                for dk in range(-1, 2):
+                                    ni, nj, nk = fi + di, fj + dj, fk + dk
+                                    if 0 <= ni < G and 0 <= nj < G and 0 <= nk < G:
+                                        if (valid[ni, nj, nk]
+                                                and not claimed[ni, nj, nk]
+                                                and divergence[ni, nj, nk] < 0):
+                                            basin_mask[ni, nj, nk] = True
+                        basin_size = int(np.sum(basin_mask))
+                        if basin_size < 3:
+                            continue
+
+                    claimed |= basin_mask
+                    basin_fraction = basin_size / n_valid if n_valid > 0 else 0.0
+
+                    mean_score = None
+                    if score_grid is not None and score_grid.shape == (G, G, G):
+                        bs_vals = score_grid[basin_mask]
+                        if len(bs_vals) > 0:
+                            mean_score = float(np.mean(bs_vals))
+
+                    # Strength: verified vortex attractors get a floor of 0.5
+                    occ_at_vortex = float(residence_score[fi, fj, fk])
+                    vortex_strength = max(
+                        occ_at_vortex / rs_max if rs_max > 0 else 0.0,
+                        0.5
+                    )
+
+                    attractors_out.append({
+                        'position': final_pos,
+                        'strength': vortex_strength,
+                        'divergence': float(divergence[fi, fj, fk]),
+                        'basin_mask': basin_mask,
+                        'basin_size': basin_size,
+                        'basin_fraction': basin_fraction,
+                        'mean_score': mean_score,
+                    })
+                    n_vortex_added += 1
+
+                if n_vortex_added > 0:
+                    print(f"[ATTRACTORS] Added {n_vortex_added} vortex attractor(s)")
+
         # ── Merge encapsulated attractors ──
         # When one attractor's bounding box is contained inside another's,
         # they look like nested shells.  Merge by absorbing the weaker
@@ -1250,6 +1470,154 @@ class FlowFieldSystem:
                 if merged:
                     break
             attractors_out = [a for a in attractors_out if a is not None]
+
+        # ── Probe escape validation ──
+        # Drop any attractor where a probe starting at its position escapes
+        # beyond a threshold.  Real attractors hold probes nearby; false
+        # positives from occupancy noise let them fly away.
+        cell_diag = float(np.linalg.norm(self.span / (G - 1)))
+        escape_thresh = cell_diag * 5  # must stay within 5 cell diagonals
+
+        validated = []
+        for att in attractors_out:
+            p = att['position'].copy().astype(np.float32)
+            start = p.copy()
+            for _ in range(500):
+                pv = self.sample_velocity(p[0], p[1], p[2])
+                if np.linalg.norm(pv) < 1e-8:
+                    break
+                p = p + pv * self.DT
+                p = np.clip(p, self.axis_min, self.axis_max)
+            drift = float(np.linalg.norm(p - start))
+            if drift < escape_thresh:
+                validated.append(att)
+        attractors_out = validated
+
+        # ── Probe-based convergence merge ──
+        # Simulate a short probe from each attractor.  If two probes end
+        # up at essentially the same point they are duplicate detections
+        # of the same convergence structure.  Keep it short (300 steps) so
+        # we only merge genuinely redundant peaks without traversing across
+        # distinct basins in smooth (MDN) fields.
+        merge_radius = cell_diag * 3
+
+        for att in attractors_out:
+            p = att['position'].copy().astype(np.float32)
+            for _ in range(300):
+                pv = self.sample_velocity(p[0], p[1], p[2])
+                if np.linalg.norm(pv) < 1e-8:
+                    break
+                p = p + pv * self.DT
+                p = np.clip(p, self.axis_min, self.axis_max)
+            att['_converged_to'] = p.copy()
+
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(attractors_out)):
+                if attractors_out[i] is None:
+                    continue
+                ci = attractors_out[i]['_converged_to']
+                for j in range(i + 1, len(attractors_out)):
+                    if attractors_out[j] is None:
+                        continue
+                    cj = attractors_out[j]['_converged_to']
+                    dist = float(np.linalg.norm(ci - cj))
+                    if dist < merge_radius:
+                        si = attractors_out[i]['strength']
+                        sj = attractors_out[j]['strength']
+                        keep, drop = (i, j) if si >= sj else (j, i)
+                        attractors_out[keep]['basin_mask'] = (
+                            attractors_out[keep]['basin_mask'] |
+                            attractors_out[drop]['basin_mask']
+                        )
+                        attractors_out[keep]['basin_size'] = int(
+                            np.sum(attractors_out[keep]['basin_mask'])
+                        )
+                        attractors_out[keep]['basin_fraction'] = (
+                            attractors_out[keep]['basin_size'] / n_valid
+                            if n_valid > 0 else 0.0
+                        )
+                        attractors_out[drop] = None
+                        merged = True
+                        break
+                if merged:
+                    break
+            attractors_out = [a for a in attractors_out if a is not None]
+
+        # Clean up temp field
+        for att in attractors_out:
+            att.pop('_converged_to', None)
+
+        # ── Connectivity cleanup ──
+        # After merges, a basin_mask may have disconnected components.
+        # Keep only the connected component containing the attractor center.
+        for att in attractors_out:
+            bm = att['basin_mask']
+            labeled_bm, n_comp = label(bm)
+            if n_comp <= 1:
+                continue
+            pos = att['position']
+            ci = int(np.clip(
+                (pos[0] - self.axis_min[0]) / self.span[0] * (G - 1) + 0.5,
+                0, G - 1))
+            cj = int(np.clip(
+                (pos[1] - self.axis_min[1]) / self.span[1] * (G - 1) + 0.5,
+                0, G - 1))
+            ck = int(np.clip(
+                (pos[2] - self.axis_min[2]) / self.span[2] * (G - 1) + 0.5,
+                0, G - 1))
+            center_comp = labeled_bm[ci, cj, ck]
+            if center_comp > 0:
+                att['basin_mask'] = labeled_bm == center_comp
+            else:
+                # Center not inside any component — keep largest
+                comp_sizes = [(c, int(np.sum(labeled_bm == c)))
+                              for c in range(1, n_comp + 1)]
+                largest = max(comp_sizes, key=lambda x: x[1])[0]
+                att['basin_mask'] = labeled_bm == largest
+            att['basin_size'] = int(np.sum(att['basin_mask']))
+            att['basin_fraction'] = (att['basin_size'] / n_valid
+                                     if n_valid > 0 else 0.0)
+
+        # ── Convergence-point patching ──
+        # The basin is built around the occupancy peak, but probes may
+        # converge to a slightly different point.  Patch the basin to
+        # include a small neighborhood of convergent cells around the
+        # actual convergence point so the probe rests inside the mesh.
+        for att in attractors_out:
+            p = att['position'].copy().astype(np.float32)
+            for _ in range(500):
+                pv = self.sample_velocity(p[0], p[1], p[2])
+                if np.linalg.norm(pv) < 1e-8:
+                    break
+                p = p + pv * self.DT
+                p = np.clip(p, self.axis_min, self.axis_max)
+            # Grid index of convergence point
+            ei = int(np.clip(
+                (p[0] - self.axis_min[0]) / self.span[0] * (G - 1) + 0.5,
+                0, G - 1))
+            ej = int(np.clip(
+                (p[1] - self.axis_min[1]) / self.span[1] * (G - 1) + 0.5,
+                0, G - 1))
+            ek = int(np.clip(
+                (p[2] - self.axis_min[2]) / self.span[2] * (G - 1) + 0.5,
+                0, G - 1))
+            if not att['basin_mask'][ei, ej, ek]:
+                # Convergence point outside basin — add a small patch
+                # of convergent cells (negative divergence) around it.
+                for di in range(-1, 2):
+                    for dj in range(-1, 2):
+                        for dk in range(-1, 2):
+                            ni = ei + di
+                            nj = ej + dj
+                            nk = ek + dk
+                            if 0 <= ni < G and 0 <= nj < G and 0 <= nk < G:
+                                if valid[ni, nj, nk] and divergence[ni, nj, nk] < 0:
+                                    att['basin_mask'][ni, nj, nk] = True
+                att['basin_size'] = int(np.sum(att['basin_mask']))
+                att['basin_fraction'] = (att['basin_size'] / n_valid
+                                         if n_valid > 0 else 0.0)
 
         attractors_out.sort(key=lambda a: a['strength'], reverse=True)
 

@@ -38,7 +38,7 @@ The **main showcase** is PRM800K below. The other two are **additional examples*
 438 step-by-step math reasoning chains from [PRM800K](https://github.com/openai/prm800k) (MIT license) — each chain is labeled `solved` or `found_error` (binary, perfectly complementary). Overall 65% of paths have errors, only 35% solve correctly. This example uses the **RBF flow model instead of MDN** because it yielded better, clearer results on this dataset. TraceScope's RBF flow reveals *where* in the reasoning space success and failure live — and how reasoning drifts between them.
 
 <p align="center">
-  <img src="docs/assets/prm_demo.gif" alt="PRM800K RBF flow with found_error coloring" width="800">
+  <img src="docs/assets/prm_demo_v2.gif" alt="PRM800K RBF flow with found_error coloring" width="800">
 </p>
 
 **What TraceScope found:**

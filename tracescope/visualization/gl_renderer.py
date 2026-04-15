@@ -377,6 +377,13 @@ class FlowRenderer:
         self._explain_pending_stage = None  # intermediate progress text
         self._debug_prompts = False         # set True to print all LLM prompts to stdout
 
+        # Persistent explained paths & attractor explanations
+        self._saved_paths: list = []        # [{control_points, explanation}]
+        self._saved_path_visuals: list = [] # [{'markers': vis, 'line': vis}]
+        self._highlighted_path: int | None = None
+        self._saved_paths_visible = True
+        self._attractor_explanations: dict = {}  # {idx: explanation_text}
+
         # Cluster colors (positions scaled below)
         n_cls = result.clusters.n_clusters
         self._cluster_colors_arr = np.array([
@@ -497,7 +504,7 @@ class FlowRenderer:
         self.canvas.events.mouse_move.connect(self._on_click_track_move)
         self.canvas.events.mouse_release.connect(self._on_click_track_release)
         self.canvas.events.mouse_press.connect(self._on_gizmo_press)
-        self.canvas.events.mouse_press.connect(self._on_attractor_click)
+        self.canvas.events.mouse_release.connect(self._on_attractor_click)
         self.canvas.events.mouse_move.connect(self._on_gizmo_move)
         self.canvas.events.mouse_release.connect(self._on_gizmo_release)
         self.canvas.events.key_press.connect(self._on_gizmo_key)
@@ -930,6 +937,13 @@ class FlowRenderer:
         btn_explain.clicked.connect(self._qt_explain)
         gl.addWidget(btn_explain)
 
+        # Toggle saved paths visibility
+        self._btn_toggle_paths = QtWidgets.QPushButton("Hide Saved Paths")
+        self._btn_toggle_paths.setObjectName('btn-secondary')
+        self._btn_toggle_paths.clicked.connect(self._toggle_saved_paths_visibility)
+        self._btn_toggle_paths.setVisible(False)
+        gl.addWidget(self._btn_toggle_paths)
+
         grp.setLayout(gl)
         vbox.addWidget(grp)
 
@@ -1257,13 +1271,16 @@ class FlowRenderer:
                 h - self._explain_overlay.height() - 20
             )
 
-        # Hint overlay: bottom-center, just above point overlay
+        # Hint overlay: bottom-center, stacked above explain/point overlays
         if hasattr(self, '_hint_overlay') and self._hint_overlay.isVisible():
             self._hint_overlay.adjustSize()
             hw = self._hint_overlay.width()
-            # Stack above point_overlay if that is showing, else sit near bottom
+            # Stack above whichever bottom overlay is tallest
             y_offset = 20
-            if self._point_overlay.isVisible():
+            if (hasattr(self, '_explain_overlay')
+                    and self._explain_overlay.isVisible()):
+                y_offset = self._explain_overlay.height() + 30
+            elif self._point_overlay.isVisible():
                 y_offset = self._point_overlay.height() + 24
             self._hint_overlay.move(
                 (w - hw) // 2,
@@ -1381,13 +1398,26 @@ class FlowRenderer:
         G = self.flow.grid_size
         att_colors = self._get_attractor_colors()
 
-        # Upsample factor for smoother meshes (2× = 80³ from 40³)
-        up = 2
+        # Upsample factor for smoother meshes (3× = 118³ from 40³)
+        up = 3
         G_up = (G - 1) * up + 1
 
         # Transform: map UPSAMPLED grid indices → world coordinates
         scale = self.flow.span / (G_up - 1)
         translate = self.flow.axis_min.copy()
+
+        # Build a convergence-weighted volume for more detailed meshes.
+        # Instead of a binary mask, use basin_score (occupancy × convergence)
+        # so the isosurface shape reflects actual flow intensity.
+        vg = self.flow.velocity_grid
+        spd = np.linalg.norm(vg, axis=-1)
+        dvx_dx = np.gradient(vg[:, :, :, 0], axis=0)
+        dvy_dy = np.gradient(vg[:, :, :, 1], axis=1)
+        dvz_dz = np.gradient(vg[:, :, :, 2], axis=2)
+        div_grid = dvx_dx + dvy_dy + dvz_dz
+        # Convergence: 1 where div is most negative, 0 at neutral/positive
+        div_ref = max(float(np.percentile(np.abs(div_grid[spd > 1e-12]), 90)), 1e-8)
+        conv_grid = np.clip(-div_grid / div_ref, 0.0, 1.0)
 
         for i, att in enumerate(attractors):
             basin_mask = att['basin_mask']
@@ -1396,11 +1426,14 @@ class FlowRenderer:
 
             base_rgb = att_colors[i] if i < len(att_colors) else np.array([0.5, 0.8, 1.0])
 
-            # Upsample basin mask for smoother isosurface, then smooth.
-            # sigma and iso level are tuned so the mesh tightly hugs the
-            # actual basin_mask boundary without ballooning outward.
-            volume_hi = zoom(basin_mask.astype(np.float32), up, order=1)
-            volume = gaussian_filter(volume_hi, sigma=0.6)
+            # Build flow-shaped volume: binary mask weighted by convergence
+            # strength.  This makes the isosurface follow flow structure
+            # (indentations where convergence is weaker, bulges where stronger)
+            # rather than being a uniform blob.
+            weighted = np.zeros_like(basin_mask, dtype=np.float32)
+            weighted[basin_mask] = 0.3 + 0.7 * conv_grid[basin_mask]
+            volume_hi = zoom(weighted, up, order=1)
+            volume = gaussian_filter(volume_hi, sigma=0.8)
 
             try:
                 with warnings.catch_warnings():
@@ -1438,8 +1471,8 @@ class FlowRenderer:
                 cloud.set_data(pts, colors)
                 self._attractor_clouds.append(cloud)
 
-            # Label — always show basin fraction
-            label_text = f"A{i + 1} ({att['basin_fraction'] * 100:.1f}%)"
+            # Label — show relative strength (normalized so strongest = 100%)
+            label_text = f"A{i + 1} ({att['strength'] * 100:.0f}%)"
             center = att['position'].copy()
             center[2] += self.flow.span[2] * 0.06
             label = scene.visuals.Text(
@@ -1478,10 +1511,17 @@ class FlowRenderer:
         self._highlighted_attractor = None
 
     def _on_attractor_click(self, event):
-        """Click to highlight the nearest attractor (when attractors are shown)."""
-        if event.button != 1 or not self._attractors_visible:
+        """Click to highlight the nearest attractor or saved path.
+
+        Fires on mouse_release.  Only acts on plain clicks (no drag/orbit)
+        so camera rotation is not affected.  Always checks both attractors
+        and saved paths and picks whichever is closest in screen space so
+        paths inside/near attractors are still clickable.
+        """
+        if event.button != 1:
             return
-        if not self._attractor_data:
+        # Only act on plain clicks — skip if user dragged (camera orbit)
+        if self._click_track_moved:
             return
         # Don't interfere with active gizmo drag
         if self._gizmo_dragging is not None:
@@ -1494,33 +1534,62 @@ class FlowRenderer:
         probe_sc = self._vispy_project(probe_pos)
         probe_dist = float(np.linalg.norm(click - probe_sc))
 
-        # Project each attractor center to 2D and find nearest
-        best_idx = None
-        best_dist = float('inf')
-        for i, att in enumerate(self._attractor_data):
-            sc = self._vispy_project(att['position'])
-            dist = float(np.linalg.norm(click - sc))
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = i
+        # ── Find nearest attractor ──
+        att_idx = None
+        att_dist = float('inf')
+        if self._attractors_visible and self._attractor_data:
+            for i, att in enumerate(self._attractor_data):
+                sc = self._vispy_project(att['position'])
+                dist = float(np.linalg.norm(click - sc))
+                if dist < att_dist:
+                    att_dist = dist
+                    att_idx = i
+            # Cap: attractor must be within 200px
+            if att_dist > 200:
+                att_idx = None
+                att_dist = float('inf')
 
-        # Probe wins ONLY when click is very close to probe (<30px)
-        # AND the probe is meaningfully closer than the nearest attractor.
-        # This lets users click on attractors even when the probe overlaps.
-        if probe_dist < 30 and probe_dist < best_dist * 0.5:
+        # ── Find nearest saved path ──
+        path_idx, path_dist = self._find_clicked_path(click, return_dist=True)
+
+        # ── Probe wins only when very close (<30px) AND closer than both ──
+        best_target_dist = min(att_dist, path_dist)
+        if probe_dist < 30 and probe_dist < best_target_dist * 0.5:
             return
 
-        # Any attractor click dismisses the explain overlay
-        if hasattr(self, '_explain_overlay'):
-            self._explain_overlay.setVisible(False)
-
-        if best_idx is None or best_dist > 200:
-            # Click too far from any attractor — deselect
+        # ── Nothing close → deselect everything ──
+        if att_idx is None and path_idx is None:
+            if hasattr(self, '_explain_overlay'):
+                self._explain_overlay.setVisible(False)
             self._set_highlighted_attractor(None)
+            self._highlighted_path = None
             self._update_contextual_hint()
             return
 
-        self._set_highlighted_attractor(best_idx)
+        # ── Pick closest: path vs attractor ──
+        # Attractor meshes are large visual targets that users click "on",
+        # whereas path splines are thin lines.  Give attractors a preference
+        # margin so clicking in the attractor mesh area selects the attractor
+        # even when a path spline passes through it.  Only pick path when
+        # it is clearly closer than any attractor (by >30px margin).
+        if hasattr(self, '_explain_overlay'):
+            self._explain_overlay.setVisible(False)
+
+        ATTRACTOR_MARGIN = 30  # px — attractor wins unless path is 30px closer
+
+        if (path_idx is not None and att_idx is not None
+                and path_dist < att_dist - ATTRACTOR_MARGIN):
+            # Path is clearly closer — select path, deselect attractor
+            self._set_highlighted_attractor(None)
+            self._highlight_saved_path(path_idx)
+        elif att_idx is not None:
+            # Attractor wins (or tied / within margin) — select attractor
+            self._highlighted_path = None
+            self._set_highlighted_attractor(att_idx)
+        elif path_idx is not None:
+            # Only path available — select path
+            self._set_highlighted_attractor(None)
+            self._highlight_saved_path(path_idx)
 
     def _set_highlighted_attractor(self, idx):
         """Highlight attractor with thick white contour lines around the mesh.
@@ -1543,23 +1612,35 @@ class FlowRenderer:
             G = self.flow.grid_size
 
             # Build the same upsampled isosurface as in _compute_and_show_attractors
-            up = 2
+            up = 3
             G_up = (G - 1) * up + 1
             scale = self.flow.span / (G_up - 1)
             translate = self.flow.axis_min.copy()
 
-            volume_hi = zoom(basin_mask.astype(np.float32), up, order=1)
-            volume = gaussian_filter(volume_hi, sigma=1.0)
+            # Convergence-weighted volume (same as main rendering)
+            vg = self.flow.velocity_grid
+            spd = np.linalg.norm(vg, axis=-1)
+            dvx_dx = np.gradient(vg[:, :, :, 0], axis=0)
+            dvy_dy = np.gradient(vg[:, :, :, 1], axis=1)
+            dvz_dz = np.gradient(vg[:, :, :, 2], axis=2)
+            div_g = dvx_dx + dvy_dy + dvz_dz
+            div_ref = max(float(np.percentile(
+                np.abs(div_g[spd > 1e-12]), 90)), 1e-8)
+            conv_g = np.clip(-div_g / div_ref, 0.0, 1.0)
+            weighted = np.zeros_like(basin_mask, dtype=np.float32)
+            weighted[basin_mask] = 0.3 + 0.7 * conv_g[basin_mask]
+            volume_hi = zoom(weighted, up, order=1)
+            volume = gaussian_filter(volume_hi, sigma=0.8)
 
-            # Extract mesh at a slightly higher level for the contour outline
+            # Extract mesh for the contour outline
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=RuntimeWarning)
                 try:
                     from skimage.measure import marching_cubes
-                    verts, faces, _, _ = marching_cubes(volume, level=0.25)
+                    verts, faces, _, _ = marching_cubes(volume, level=0.45)
                 except ImportError:
                     from vispy.geometry.isosurface import isosurface as _vispy_iso
-                    verts, faces = _vispy_iso(volume, level=0.25)
+                    verts, faces = _vispy_iso(volume, level=0.45)
 
             if len(verts) > 0 and len(faces) > 0:
                 # Transform vertices from grid to world coordinates
@@ -1600,6 +1681,14 @@ class FlowRenderer:
                 self._attractor_highlight_border = border_vis
 
             self._show_attractor_info(idx)
+
+            # Show cached explanation if available
+            cached_key = str(idx)
+            if cached_key in self._attractor_explanations:
+                self._show_explain(
+                    self._attractor_explanations[cached_key]
+                    + "\n\n(Cached · Press Shift+E to re-explain)"
+                )
         else:
             # Clear attractor info — allow probe to update again
             if hasattr(self, '_info_overlay'):
@@ -1798,16 +1887,12 @@ class FlowRenderer:
 
         return selected
 
-    def _explain_highlighted_attractor(self, deep=False):
+    def _explain_highlighted_attractor(self, deep=False, force=False):
         """Generate LLM explanation for the currently highlighted attractor.
 
         Args:
-            deep: If True, runs the full multi-stage process:
-                1. Find 3 distant starting points spread in different directions
-                2. Simulate each probe flowing toward the attractor (3-4 waypoints)
-                3. Use path explain logic to get an LLM explanation for each trajectory
-                4. Feed all 3 trajectory explanations + attractor context into final prompt
-                If False, does only the direct attractor explanation (faster).
+            deep: If True, runs the full multi-stage process.
+            force: If True, ignores cached explanation and regenerates.
         """
         if self._highlighted_attractor is None:
             return
@@ -1816,9 +1901,18 @@ class FlowRenderer:
             return
 
         idx = self._highlighted_attractor
+
+        # Show cached explanation if available (unless forcing re-explain)
+        cached_key = str(idx)
+        if not force and cached_key in self._attractor_explanations:
+            cached = self._attractor_explanations[cached_key]
+            self._show_explain(cached + "\n\n(Cached · Press Shift+E to re-explain)")
+            return
+
         att = self._attractor_data[idx]
         pos = att['position']
         debug = getattr(self, '_debug_prompts', False)
+        self._explain_pending_attractor_idx = idx
 
         if deep:
             self._show_explain(
@@ -2005,8 +2099,12 @@ class FlowRenderer:
         """Gather per-entry score values and normalize to [0, 1].
 
         Raw scores can have arbitrary ranges (e.g. reliability 1–5,
-        error_rate 0–0.3).  We rescale so the colormap always spans
-        the full red→green range across the actual data.
+        error_rate 0–0.3).  We use percentile-based normalization
+        (5th–95th percentile) rather than min-max so that skewed
+        distributions with outliers still produce a meaningful color
+        spread instead of collapsing most points to one end of the
+        colormap.  Binary data (only 2 unique values) falls back to
+        min-max so that the two values map cleanly to 0 and 1.
         """
         entry_scores = self.result.get_entry_scores(channel)
         path_score_map = self.result.get_path_scores(channel)
@@ -2021,13 +2119,26 @@ class FlowRenderer:
         vals = np.array([float(v) if v is not None else np.nan for v in raw],
                         dtype=np.float32)
 
-        # Normalize to [0, 1] using the actual data range
+        # Normalize to [0, 1] — use percentile clipping for graded
+        # distributions, min-max for binary so the two values stay at
+        # the extremes of the colormap.
         valid = ~np.isnan(vals)
         if valid.any():
-            lo = float(np.nanmin(vals))
-            hi = float(np.nanmax(vals))
+            valid_vals = vals[valid]
+            unique_count = len(np.unique(valid_vals))
+            if unique_count <= 2:
+                # Binary: preserve 0/1 extremes
+                lo = float(valid_vals.min())
+                hi = float(valid_vals.max())
+            else:
+                # Graded: clip to 5-95 percentile so outliers don't
+                # squash the main distribution against one color
+                lo = float(np.percentile(valid_vals, 5))
+                hi = float(np.percentile(valid_vals, 95))
             if hi - lo > 1e-8:
-                vals[valid] = (vals[valid] - lo) / (hi - lo)
+                vals[valid] = np.clip(
+                    (valid_vals - lo) / (hi - lo), 0.0, 1.0
+                )
             else:
                 vals[valid] = 0.5  # all same value → neutral
         vals[~valid] = 0.5  # missing → neutral
@@ -2148,14 +2259,19 @@ class FlowRenderer:
         px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
         control_points = list(self._control_points)  # snapshot
 
+        # Include current probe position if no marks yet
+        if not control_points:
+            control_points = [pos.copy()]
+
         self._show_explain("Generating explanation...")
         self._explain_pending = None  # will be set by background thread
+        self._explain_pending_path_points = [p.copy() for p in control_points]
 
         def _run():
             import logging
             logger = logging.getLogger(__name__)
             try:
-                if control_points:
+                if len(control_points) > 1:
                     text = self._build_multi_explain()
                 else:
                     info = probe_with_explanation(
@@ -2170,6 +2286,7 @@ class FlowRenderer:
             except Exception as e:
                 logger.error(f"Explain failed: {e}", exc_info=True)
                 self._explain_pending = f"Explain error: {e}"
+                self._explain_pending_path_points = None  # don't save on error
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
@@ -2190,12 +2307,27 @@ class FlowRenderer:
         """Pick the right hint based on current probe / flow / attractor state."""
         if not hasattr(self, '_hint_overlay'):
             return
+        # Highlighted saved path
+        if self._highlighted_path is not None:
+            self._show_hint(
+                "Press Delete to remove this path  ·  "
+                "Click elsewhere to deselect"
+            )
+            return
         # Attractor highlighted takes priority
         if self._attractors_visible and self._highlighted_attractor is not None:
-            self._show_hint(
-                "Press E to explain  ·  "
-                "Shift+E for deeper explanation (slower)"
-            )
+            idx = self._highlighted_attractor
+            cached = str(idx) in self._attractor_explanations
+            if cached:
+                self._show_hint(
+                    "Press E to show explanation  ·  "
+                    "Shift+E to re-explain"
+                )
+            else:
+                self._show_hint(
+                    "Press E to explain  ·  "
+                    "Shift+E for deeper explanation (slower)"
+                )
             return
         # Probe being dragged by flow
         if self.ball_flowing and self._has_flow:
@@ -2358,6 +2490,274 @@ class FlowRenderer:
         return explanation
 
     # ═══════════════════════════════════════════════════
+    #  Persistent explained paths & attractor explanations
+    # ═══════════════════════════════════════════════════
+
+    def _explanations_cache_path(self):
+        """Return base path for explanation cache files, or None."""
+        cp = getattr(self.result, 'cache_path', None)
+        return cp
+
+    def _load_saved_paths(self):
+        """Load saved explained paths from cache."""
+        import json
+        cp = self._explanations_cache_path()
+        if cp is None:
+            return
+        path = f"{cp}_explained_paths.json"
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                self._saved_paths = json.load(f)
+            # Convert control_points back to numpy arrays
+            for sp in self._saved_paths:
+                sp['control_points'] = [np.array(p, dtype=np.float32)
+                                        for p in sp['control_points']]
+        except (FileNotFoundError, json.JSONDecodeError):
+            self._saved_paths = []
+
+    def _save_paths_to_cache(self):
+        """Persist saved paths to JSON cache."""
+        import json
+        cp = self._explanations_cache_path()
+        if cp is None:
+            return
+        path = f"{cp}_explained_paths.json"
+        data = []
+        for sp in self._saved_paths:
+            data.append({
+                'control_points': [p.tolist() for p in sp['control_points']],
+                'explanation': sp['explanation'],
+            })
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+
+    def _load_attractor_explanations(self):
+        """Load cached attractor explanations."""
+        import json
+        cp = self._explanations_cache_path()
+        if cp is None:
+            return
+        path = f"{cp}_attractor_explanations.json"
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                self._attractor_explanations = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            self._attractor_explanations = {}
+
+    def _save_attractor_explanations_to_cache(self):
+        """Persist attractor explanations to JSON cache."""
+        import json
+        cp = self._explanations_cache_path()
+        if cp is None:
+            return
+        path = f"{cp}_attractor_explanations.json"
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(self._attractor_explanations, f, indent=2)
+
+    def _add_saved_path(self, control_points, explanation):
+        """Save an explained path and render it."""
+        self._saved_paths.append({
+            'control_points': [p.copy() for p in control_points],
+            'explanation': explanation,
+        })
+        self._save_paths_to_cache()
+        self._render_saved_path(len(self._saved_paths) - 1)
+        self._update_paths_button()
+
+    def _render_saved_path(self, idx):
+        """Create visuals for one saved path."""
+        sp = self._saved_paths[idx]
+        pts = np.array(sp['control_points'], dtype=np.float32)
+
+        # Cycle through distinct colors for saved paths
+        PATH_COLORS = [
+            (0.2, 0.8, 1.0, 0.9),   # cyan
+            (0.2, 1.0, 0.4, 0.9),   # green
+            (1.0, 0.6, 0.2, 0.9),   # orange
+            (0.8, 0.4, 1.0, 0.9),   # purple
+            (1.0, 1.0, 0.2, 0.9),   # yellow
+            (1.0, 0.4, 0.6, 0.9),   # pink
+        ]
+        color = PATH_COLORS[idx % len(PATH_COLORS)]
+
+        # Markers at control points
+        markers = ClusterPoint(point_size=8.0, parent=self._render_root)
+        markers.order = 2
+        marker_colors = np.tile(np.array(color, dtype=np.float32), (len(pts), 1))
+        markers.set_data(pts, marker_colors)
+        markers.visible = self._saved_paths_visible
+
+        # Spline line
+        line_vis = None
+        if len(pts) >= 2:
+            spline = catmull_rom_spline(pts, 10).astype(np.float32)
+            line_vis = scene.visuals.Line(
+                pos=spline, color=color, width=3,
+                parent=self._render_root, antialias=True,
+            )
+            line_vis.order = 2
+            line_vis.visible = self._saved_paths_visible
+
+        # Path label at midpoint
+        mid_idx = len(pts) // 2
+        mid = pts[mid_idx].copy()
+        mid[2] += self.flow.span[2] * 0.04 if self.flow else 0.2
+        label = scene.visuals.Text(
+            text=f"P{idx + 1}", pos=mid,
+            color=color[:3] + (0.95,),
+            font_size=self.ATTRACTOR_LABEL_SIZE * 0.8,
+            bold=True, parent=self._render_root,
+        )
+        label.order = 2
+        label.visible = self._saved_paths_visible
+
+        self._saved_path_visuals.append({
+            'markers': markers,
+            'line': line_vis,
+            'label': label,
+            'color': color,
+        })
+
+    def _render_all_saved_paths(self):
+        """Render all loaded saved paths."""
+        self._clear_saved_path_visuals()
+        for i in range(len(self._saved_paths)):
+            self._render_saved_path(i)
+        self._update_paths_button()
+
+    def _clear_saved_path_visuals(self):
+        """Remove all saved path visuals from scene."""
+        for vis in self._saved_path_visuals:
+            vis['markers'].parent = None
+            if vis['line']:
+                vis['line'].parent = None
+            vis['label'].parent = None
+        self._saved_path_visuals.clear()
+        self._highlighted_path = None
+
+    def _toggle_saved_paths_visibility(self):
+        """Show/hide all saved path visuals."""
+        self._saved_paths_visible = not self._saved_paths_visible
+        for vis in self._saved_path_visuals:
+            vis['markers'].visible = self._saved_paths_visible
+            if vis['line']:
+                vis['line'].visible = self._saved_paths_visible
+            vis['label'].visible = self._saved_paths_visible
+        self._update_paths_button()
+
+    def _update_paths_button(self):
+        """Update the paths toggle button text."""
+        if not hasattr(self, '_btn_toggle_paths'):
+            return
+        n = len(self._saved_paths)
+        if n == 0:
+            self._btn_toggle_paths.setVisible(False)
+            return
+        self._btn_toggle_paths.setVisible(True)
+        vis = "Hide" if self._saved_paths_visible else "Show"
+        self._btn_toggle_paths.setText(f"{vis} {n} Saved Path(s)")
+
+    def _highlight_saved_path(self, idx):
+        """Highlight a saved path and show its explanation."""
+        # Unhighlight previous
+        if self._highlighted_path is not None and self._highlighted_path < len(self._saved_path_visuals):
+            vis = self._saved_path_visuals[self._highlighted_path]
+            vis['markers'].set_gl_state(depth_test=True)
+            if vis['line']:
+                vis['line'].set_gl_state(depth_test=True)
+
+        self._highlighted_path = idx
+
+        if idx is not None and idx < len(self._saved_path_visuals):
+            vis = self._saved_path_visuals[idx]
+            # Make markers bigger for highlight
+            sp = self._saved_paths[idx]
+            pts = np.array(sp['control_points'], dtype=np.float32)
+            white = np.ones((len(pts), 4), dtype=np.float32)
+            vis['markers'].set_data(pts, white)
+
+            # Show explanation
+            self._show_explain(f"Path P{idx + 1} Explanation:\n\n{sp['explanation']}")
+            self._update_contextual_hint()
+            # Reposition so hint stacks above the explain overlay
+            self._reposition_overlays()
+        else:
+            self._highlighted_path = None
+
+    def _delete_highlighted_path(self):
+        """Delete the currently highlighted saved path."""
+        if self._highlighted_path is None:
+            return
+        idx = self._highlighted_path
+
+        # Remove visuals
+        if idx < len(self._saved_path_visuals):
+            vis = self._saved_path_visuals[idx]
+            vis['markers'].parent = None
+            if vis['line']:
+                vis['line'].parent = None
+            vis['label'].parent = None
+
+        # Remove from lists
+        if idx < len(self._saved_paths):
+            self._saved_paths.pop(idx)
+        if idx < len(self._saved_path_visuals):
+            self._saved_path_visuals.pop(idx)
+
+        self._highlighted_path = None
+        self._save_paths_to_cache()
+
+        # Re-render all paths (to fix indices/labels)
+        self._render_all_saved_paths()
+
+        # Hide explanation
+        if hasattr(self, '_explain_overlay'):
+            self._explain_overlay.setVisible(False)
+        self._show_hint("")
+
+    def _find_clicked_path(self, click_pos, return_dist=False):
+        """Find which saved path is nearest to a screen click position.
+        Returns path index or None.  When *return_dist* is True, returns
+        (index, distance) tuple — (None, inf) when nothing found."""
+        if not self._saved_paths or not self._saved_paths_visible:
+            return (None, float('inf')) if return_dist else None
+
+        best_idx = None
+        best_dist = 60  # max 60px click distance
+
+        try:
+            for i, sp in enumerate(self._saved_paths):
+                pts = np.array(sp['control_points'], dtype=np.float32)
+                if len(pts) >= 2:
+                    spline = catmull_rom_spline(pts, 20).astype(np.float32)
+                else:
+                    spline = pts
+                # Project to screen (apply scene scale like _vispy_project)
+                s = self._scene_scale
+                scaled = spline * np.array([s, s, s], dtype=np.float32)
+                pts_h = np.hstack([scaled, np.ones((len(scaled), 1))]).astype(np.float32)
+                mapped = self.view.scene.transform.map(pts_h)
+                w_vals = mapped[:, 3:4]
+                w_vals = np.where(np.abs(w_vals) < 1e-8, 1.0, w_vals)
+                screen = mapped[:, :2] / w_vals
+                # Point-to-segment distance along the spline
+                min_d = float('inf')
+                for j in range(len(screen) - 1):
+                    d = self._point_to_segment_dist_2d(
+                        click_pos, screen[j], screen[j + 1])
+                    if d < min_d:
+                        min_d = d
+                if min_d < best_dist:
+                    best_dist = min_d
+                    best_idx = i
+        except Exception:
+            pass
+
+        if return_dist:
+            return (best_idx, best_dist if best_idx is not None else float('inf'))
+        return best_idx
+
+    # ═══════════════════════════════════════════════════
     #  Helpers
     # ═══════════════════════════════════════════════════
 
@@ -2460,6 +2860,22 @@ class FlowRenderer:
             self._explain_pending = None
             self._explain_pending_stage = None
             self._show_explain(pending)
+
+            # Save explained path if this was a path explanation (not error)
+            path_pts = getattr(self, '_explain_pending_path_points', None)
+            if path_pts is not None and not pending.startswith("Explain error:"):
+                self._explain_pending_path_points = None
+                self._add_saved_path(path_pts, pending)
+                # Clear control points so next marking starts fresh
+                self._control_points.clear()
+                self._refresh_control_points()
+
+            # Save attractor explanation if this was an attractor explain
+            att_idx = getattr(self, '_explain_pending_attractor_idx', None)
+            if att_idx is not None and not pending.startswith("Explain error:"):
+                self._explain_pending_attractor_idx = None
+                self._attractor_explanations[str(att_idx)] = pending
+                self._save_attractor_explanations_to_cache()
 
         # --- Auto-rotation disabled (kept for future use) ---
         # if self.auto_rotate:
@@ -2657,9 +3073,22 @@ class FlowRenderer:
             # Context-sensitive: attractor explain takes priority, else path explain
             if self._attractors_visible and self._highlighted_attractor is not None:
                 shift = 'Shift' in event.modifiers if hasattr(event, 'modifiers') else False
-                self._explain_highlighted_attractor(deep=shift)
+                idx = self._highlighted_attractor
+                cached_key = str(idx)
+                has_cached = cached_key in self._attractor_explanations
+                if shift and has_cached:
+                    # Shift+E with cached = force re-explain (deep)
+                    self._explain_highlighted_attractor(deep=True, force=True)
+                elif shift:
+                    self._explain_highlighted_attractor(deep=True)
+                else:
+                    self._explain_highlighted_attractor(deep=False)
             else:
                 self._qt_explain()
+        elif key == 'Delete':
+            # Delete highlighted saved path
+            if self._highlighted_path is not None:
+                self._delete_highlighted_path()
         elif key == 'D':
             # Toggle debug blob visualization
             self._debug_blob = not self._debug_blob
@@ -3077,6 +3506,12 @@ class FlowRenderer:
 
         # Apply optional initial UI state overrides
         self._apply_initial_state()
+
+        # Load cached explained paths and attractor explanations
+        self._load_saved_paths()
+        self._load_attractor_explanations()
+        if self._saved_paths:
+            self._render_all_saved_paths()
 
         if self.window is not None:
             self.window.show()

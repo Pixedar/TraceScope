@@ -58,7 +58,7 @@ def _fallback_from_data(matrix: np.ndarray, target_dim: int) -> np.ndarray:
 
     return pc[:, :target_dim].astype(np.float64)
 
-def reduce_embeddings(embedding_list, target_dim=2, n_neighbors=None, method=None):
+def reduce_embeddings(embedding_list, target_dim=2, n_neighbors=None, method=None, random_state=42):
 #     matrix = np.array(embedding_list, dtype=float)
 
 
@@ -98,18 +98,18 @@ def reduce_embeddings(embedding_list, target_dim=2, n_neighbors=None, method=Non
             metric='cosine',
             init='pca',
             learning_rate='auto',
-            random_state=42
+            random_state=random_state
         )
         vis_dims = tsne.fit_transform(clean_matrix)
 
     else:  # UMAP first, TSNE fallback
         try:
-            logger.info(f"UMAP ▶ n_components={target_dim}, n_neighbors={n_neighbors}, metric='cosine'")
+            logger.info(f"UMAP ▶ n_components={target_dim}, n_neighbors={n_neighbors}, metric='cosine', random_state={random_state}")
             reducer = umap.UMAP(
                 n_components=target_dim,
                 n_neighbors=n_neighbors,
                 metric='cosine',
-                random_state=42
+                random_state=random_state
             )
             vis_dims = reducer.fit_transform(matrix)
         except Exception as e:
@@ -128,7 +128,7 @@ def reduce_embeddings(embedding_list, target_dim=2, n_neighbors=None, method=Non
                     metric='cosine',
                     init='pca',
                     learning_rate='auto',
-                    random_state=42
+                    random_state=random_state
                 )
                 vis_dims = tsne.fit_transform(clean_matrix)
             else:
@@ -151,7 +151,8 @@ def optimize_reduction(embeddings_json,
                            user_clusters=None,
                            init_coords_json=None,
                            n_epochs_local=200,
-                           param_range=None):
+                           param_range=None,
+                           random_state=42):
 
 
 
@@ -231,7 +232,7 @@ def optimize_reduction(embeddings_json,
                     n_components = target_dim,
                     n_neighbors  = min(param, n_samples-1),
                     metric       = 'cosine',
-                    random_state = 42
+                    random_state = random_state
                 )
                 if init_coords_json is not None:
                     kw_umap.update(
@@ -257,7 +258,7 @@ def optimize_reduction(embeddings_json,
                     metric='cosine',
                     init='pca',
                     learning_rate='auto',
-                    random_state=42
+                    random_state=random_state
                 ).fit_transform(clean_matrix)
                 score_tsne = silhouette_score(ts, cluster_labels)
             except Exception as e:
@@ -290,7 +291,7 @@ def optimize_reduction(embeddings_json,
                         n_components=target_dim,
                         n_neighbors=min(param, n_samples - 1),
                         metric='cosine',
-                        random_state=42
+                        random_state=random_state
                     )
                     um = um_reducer.fit_transform(Xα)
                     score_umap = silhouette_score(um, cluster_labels)
@@ -306,7 +307,7 @@ def optimize_reduction(embeddings_json,
                         metric='cosine',
                         init='pca',
                         learning_rate='auto',
-                        random_state=42
+                        random_state=random_state
                     ).fit_transform(Xα)
                     score_tsne = silhouette_score(ts, cluster_labels)
                 except Exception as e:
@@ -330,7 +331,7 @@ def optimize_reduction(embeddings_json,
         logger.warning("No valid optimized embedding found — falling back to default 3D reduction")
        # choose the same default n_neighbors UMAP would use
         default_nbrs = min(15, n_samples - 1)
-        fallback = reduce_embeddings(embedding_list, target_dim=target_dim)
+        fallback = reduce_embeddings(embedding_list, target_dim=target_dim, random_state=random_state)
         best_param = default_nbrs
         best_method = "umap"
         best_score = None

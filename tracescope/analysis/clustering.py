@@ -15,12 +15,12 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_k=3):
+def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_k=3, random_state=42):
     # build & normalize
     matrix = np.array(embedding_list, dtype=float)
     matrix = matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
     n_samples = matrix.shape[0]
-    logger.info(f"cluster_embeddings ▶ n_samples={n_samples}, requested n_clusters={n_clusters}")
+    logger.info(f"cluster_embeddings ▶ n_samples={n_samples}, requested n_clusters={n_clusters}, random_state={random_state}")
 
     if n_samples < 2:
         raise ValueError("Need at least 2 samples for clustering")
@@ -43,7 +43,7 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_
             for alpha in (0, 0.25, 0.5, 0.75, 1):
                 Xα = safe_transform(matrix_orig, L, alpha)
                 for k in range(2, max_k + 1):
-                    km = KMeans(n_clusters=k, init='k-means++', random_state=42)
+                    km = KMeans(n_clusters=k, init='k-means++', random_state=random_state)
                     lbl = km.fit_predict(Xα)
                     sil = silhouette_score(Xα, lbl)
                     if sil > best_score:
@@ -68,7 +68,7 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_
 
             for k in range(min_k, max_k + 1):
                 logger.info(f"Trying k={k}")
-                km = KMeans(n_clusters=k, init='k-means++', random_state=42)
+                km = KMeans(n_clusters=k, init='k-means++', random_state=random_state)
                 lbl = km.fit_predict(matrix)
                 sil = silhouette_score(matrix, lbl)
                 logger.info(f" k={k} silhouette={sil:.4f}")
@@ -85,7 +85,7 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_
                 alt_labels = None
                 alt_k = None
                 for k in range(3, min(max_k + 1, 6)):
-                    lbl = KMeans(n_clusters=k, random_state=42).fit_predict(matrix)
+                    lbl = KMeans(n_clusters=k, random_state=random_state).fit_predict(matrix)
                     s = silhouette_score(matrix, lbl)
                     logger.info(f"  alt_k={k} silhouette={s:.4f}")
                     if s > alt_best:
@@ -93,14 +93,14 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_
                 if alt_k:
                     logger.info(f"Switching to k={alt_k} with silhouette={alt_best:.4f}")
                     best_k, best_labels = alt_k, alt_labels
-                    best_centroids = KMeans(n_clusters=alt_k, random_state=42).fit(matrix).cluster_centers_
+                    best_centroids = KMeans(n_clusters=alt_k, random_state=random_state).fit(matrix).cluster_centers_
 
             n_clusters = best_k
             labels = best_labels
             centroids = best_centroids
 
     else:
-        kmeans = KMeans(n_clusters=n_clusters, init='k-means++', random_state=42)
+        kmeans = KMeans(n_clusters=n_clusters, init='k-means++', random_state=random_state)
         labels = kmeans.fit_predict(matrix)
         centroids = kmeans.cluster_centers_
 
@@ -120,7 +120,7 @@ def cluster_embeddings(embedding_list, n_clusters=None, user_clusters=None, min_
         "labels": labels.tolist(),
     }
 
-def main(embeddings_json, n_clusters=None, aspect=None, user_clusters=None, compute_moving=False, min_k=3):
+def main(embeddings_json, n_clusters=None, aspect=None, user_clusters=None, compute_moving=False, min_k=3, random_state=42):
     # Load all embeddings directly from JSON
     embedding_list = json.loads(embeddings_json)
 
@@ -151,7 +151,10 @@ def main(embeddings_json, n_clusters=None, aspect=None, user_clusters=None, comp
     # ────────────────────────────────────────────────────────────────────────
 
     # Cluster them (no deduplication or pruning)
-    result = cluster_embeddings(embedding_list, n_clusters, user_clusters=user_clusters, min_k=min_k)
+    result = cluster_embeddings(
+        embedding_list, n_clusters,
+        user_clusters=user_clusters, min_k=min_k, random_state=random_state,
+    )
     # print("RESULT:", result)
 
     # ── Optional moving‐average “closeness” to each cluster ──

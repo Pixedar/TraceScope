@@ -211,6 +211,8 @@ class AnalysisPipeline:
         rbf_smoothing: Optional[float] = None,
         min_k: int = 3,
         param_range: Optional[list] = None,
+        deterministic: Optional[bool] = None,
+        seed: Optional[int] = None,
     ) -> AnalysisResult:
         """Run the full analysis pipeline.
 
@@ -239,6 +241,18 @@ class AnalysisPipeline:
                 dimension reduction (e.g. [45, 50, 55]). Default None = full
                 search [5, 10, 15, ..., 195]. Use this to speed up re-runs
                 when you already know the approximate best parameter.
+            deterministic: If set, overrides `config.deterministic` for this
+                run only. True seeds every stage; False lets each stage
+                pick its own seed (different flow topology each run).
+            seed: If set, overrides `config.seed` for this run only. The
+                global integer seed used by every randomized stage when
+                `deterministic=True` — MDN training (torch + numpy),
+                KMeans clustering, and UMAP/t-SNE dimension reduction.
+                Change this to experiment with alternative flow shapes,
+                cluster layouts, and axis alignments without losing
+                reproducibility. Included in the cache fingerprint, so a
+                different seed re-runs the pipeline instead of loading a
+                stale cached result.
 
         Returns:
             AnalysisResult with all computed data.
@@ -256,17 +270,28 @@ class AnalysisPipeline:
 
         # ── Fall back to config values for unset parameters ──────────
         if flow_mode is None:
-            flow_mode = self._config.flow_mode
+            flow_mode = self.config.flow_mode
         if mdn_hidden is None:
-            mdn_hidden = self._config.mdn_hidden
+            mdn_hidden = self.config.mdn_hidden
         if mdn_iters is None:
-            mdn_iters = self._config.mdn_iters
+            mdn_iters = self.config.mdn_iters
         if velocity_grid_size is None:
-            velocity_grid_size = self._config.velocity_grid_size
+            velocity_grid_size = self.config.velocity_grid_size
         if rbf_kernel is None:
-            rbf_kernel = self._config.rbf_kernel
+            rbf_kernel = self.config.rbf_kernel
         if rbf_smoothing is None:
-            rbf_smoothing = self._config.rbf_smoothing
+            rbf_smoothing = self.config.rbf_smoothing
+        if deterministic is None:
+            deterministic = self.config.deterministic
+        if seed is None:
+            seed = getattr(self.config, "seed", 42)
+
+        # When deterministic is disabled, pass random_state=None to
+        # sklearn/UMAP so every call picks a fresh entropy source.
+        # `_effective_seed` is what we thread into stages that accept a
+        # seed value (MDN always receives an int and consults
+        # `deterministic` separately).
+        _effective_random_state = seed if deterministic else None
 
         # ── Check full-result cache ───────────────────────────────────
         if cache_path is not None:
@@ -279,9 +304,40 @@ class AnalysisPipeline:
                 try:
                     with open(str(json_path), "r", encoding="utf-8") as _f:
                         _meta = json.load(_f)
-                    # Build fingerprint from current inputs
+                    # Build fingerprint from current inputs.  Include
+                    # score channel names so that changing the channel
+                    # set (e.g. dropping found_error, adding path_length)
+                    # invalidates the cache — otherwise the cached result
+                    # would be loaded with stale scores missing.
+                    #
+                    # Backward-compat: when running with the historical
+                    # defaults (deterministic=True AND seed=42) we emit
+                    # the *exact* old fingerprint format so existing
+                    # cached results stay valid bit-for-bit and do NOT
+                    # need to be recomputed.  Any non-default seed (or
+                    # deterministic=False) appends a seed suffix, giving
+                    # alternate runs their own distinct cached results.
                     _texts = sorted(e.text for e in session.entries)
-                    _blob = json.dumps(_texts, sort_keys=True) + "|" + self._embedding_provider.model_name() + "|" + flow_mode
+                    _score_channels = sorted(session.score_channels)
+                    _is_default_seed = bool(deterministic) and int(seed) == 42
+                    if _is_default_seed:
+                        _blob = (
+                            json.dumps(_texts, sort_keys=True) + "|"
+                            + self._embedding_provider.model_name() + "|"
+                            + flow_mode + "|"
+                            + json.dumps(_score_channels, sort_keys=True)
+                        )
+                    else:
+                        _seed_key = (
+                            f"{int(seed)}" if deterministic else "nondet"
+                        )
+                        _blob = (
+                            json.dumps(_texts, sort_keys=True) + "|"
+                            + self._embedding_provider.model_name() + "|"
+                            + flow_mode + "|"
+                            + json.dumps(_score_channels, sort_keys=True) + "|"
+                            + _seed_key
+                        )
                     _fp = _hl.sha256(_blob.encode("utf-8")).hexdigest()
                     if _meta.get("fingerprint") == _fp:
                         logger.info("Full result cache hit — skipping pipeline")
@@ -336,7 +392,16 @@ class AnalysisPipeline:
         from tracescope.analysis.clustering import main as cluster_main
 
         emb_fp = embeddings_fingerprint(embeddings)
-        cached_clustering = self._result_cache.get_result("clustering", emb_fp)
+
+        # Include seed in the per-stage fingerprint so flipping seeds
+        # does not return a stale result from a previous seed.
+        _cluster_fp = (
+            emb_fp + f"|seed={seed if deterministic else 'nondet'}"
+            + f"|mink={min_k}"
+        )
+        cached_clustering = self._result_cache.get_result(
+            "clustering", _cluster_fp
+        )
 
         if cached_clustering is not None:
             logger.info("Using cached clustering result")
@@ -344,11 +409,12 @@ class AnalysisPipeline:
         else:
             embeddings_json = json.dumps(embeddings.tolist())
             cluster_result_json = cluster_main(
-                embeddings_json, n_clusters=n_clusters, min_k=min_k
+                embeddings_json, n_clusters=n_clusters, min_k=min_k,
+                random_state=_effective_random_state,
             )
             cluster_raw = json.loads(cluster_result_json)
             self._result_cache.put_result(
-                "clustering", emb_fp, json.dumps(cluster_raw).encode("utf-8")
+                "clustering", _cluster_fp, json.dumps(cluster_raw).encode("utf-8")
             )
 
         clusters = ClusterResult(
@@ -365,8 +431,12 @@ class AnalysisPipeline:
         import hashlib as _hashlib
 
         cluster_labels_json = json.dumps(clusters.labels)
+        # dr_key includes labels (so it changes with clustering), but we
+        # also mix in the seed so alternate seeds don't return a stale
+        # projection from a previous run.
+        _seed_tag = f"seed={seed if deterministic else 'nondet'}"
         dr_key = emb_fp + "_" + _hashlib.sha256(
-            cluster_labels_json.encode("utf-8")
+            (cluster_labels_json + "|" + _seed_tag).encode("utf-8")
         ).hexdigest()[:16]
 
         cached_reduction = self._result_cache.get_result("dim_reduction", dr_key)
@@ -379,8 +449,11 @@ class AnalysisPipeline:
             ).reshape(n_entries, 3).copy()
         else:
             embeddings_json = json.dumps(embeddings.tolist())
-            reduction_json = optimize_reduction(embeddings_json, cluster_labels_json,
-                                                    param_range=param_range)
+            reduction_json = optimize_reduction(
+                embeddings_json, cluster_labels_json,
+                param_range=param_range,
+                random_state=_effective_random_state,
+            )
             reduction_raw = json.loads(reduction_json)
             projected_3d = np.array(reduction_raw["embedding"], dtype=np.float32)
             self._result_cache.put_result(
@@ -518,6 +591,8 @@ class AnalysisPipeline:
                 if flow_mode == "mdn":
                     _flow_kwargs["hidden"] = mdn_hidden
                     _flow_kwargs["iters"] = mdn_iters
+                    _flow_kwargs["deterministic"] = deterministic
+                    _flow_kwargs["seed"] = int(seed)
                 elif flow_mode == "rbf":
                     _flow_kwargs["kernel"] = rbf_kernel
                     _flow_kwargs["smoothing"] = rbf_smoothing
@@ -536,11 +611,18 @@ class AnalysisPipeline:
                 flow_trained = True
                 _progress("flow_model", 0.5)
 
-                # Build velocity grid (cached by projected_3d fingerprint)
+                # Build velocity grid (cached by projected_3d fingerprint).
+                # Include (flow_mode, seed, deterministic) so two runs with
+                # different seeds produce separately-cached grids.
                 if flow_mode in ("mdn", "rbf") and flow_trained:
                     _progress("velocity_grid", 0.0)
-                    grid_fp = embeddings_fingerprint(
+                    _raw_grid_fp = embeddings_fingerprint(
                         projected_3d.reshape(len(projected_3d), -1)
+                    )
+                    grid_fp = (
+                        _raw_grid_fp
+                        + f"|{flow_mode}"
+                        + f"|seed={seed if deterministic else 'nondet'}"
                     )
                     cached_grid = self._result_cache.get_result(
                         "velocity_grid", grid_fp
@@ -607,6 +689,8 @@ class AnalysisPipeline:
             fitted_reducer=fitted_reducer,
             cache_path=cache_path,
             flow_mode=flow_mode,
+            seed=int(seed),
+            deterministic=bool(deterministic),
         )
 
         # ── Save to full-result cache ─────────────────────────────────

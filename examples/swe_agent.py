@@ -19,11 +19,16 @@ Score channels:
 No extra dependencies required — fetches data directly from HuggingFace API.
 """
 
+import argparse
 import json
 import urllib.request
 from pathlib import Path
 
 from tracescope import TraceScopeConfig, AnalysisPipeline, from_lists, TraceQuery, launch_renderer
+
+parser = argparse.ArgumentParser(description="SWE-Agent Trajectories example")
+parser.add_argument("--rbf", action="store_true", help="Use RBF flow model instead of MDN")
+args = parser.parse_args()
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -145,11 +150,15 @@ session = from_lists(
     path_scores=path_scores if path_scores else None,
 )
 
+_flow_mode = "rbf" if args.rbf else "mdn"
+_cache_suffix = "_rbf" if args.rbf else ""
+
 pipeline = AnalysisPipeline(config)
 result = pipeline.analyze(
     session,
-    cache_path=str(_ROOT / "cache" / "swe_agent"),
+    cache_path=str(_ROOT / "cache" / f"swe_agent{_cache_suffix}"),
     train_flow=True,
+    flow_mode=_flow_mode,
 )
 
 query = TraceQuery(result, pipeline.embedding_provider)

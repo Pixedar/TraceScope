@@ -1,8 +1,8 @@
-# API keys - NEVER commit
+
 .env
 *.env
 
-# Python
+
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -10,19 +10,19 @@ dist/
 build/
 *.egg
 
-# Virtual env
+
 venv/
 .venv/
 
-# IDE
+
 .idea/
 .vscode/
 *.swp
 
-# TraceScope data
+
 .tracescope/
 
-# OS
+
 .DS_Store
 Thumbs.db
 
@@ -33,6 +33,5 @@ cache
 test
 /test
 
-# Playground (temporary testing, not for distribution)
 playground/
 /playground
