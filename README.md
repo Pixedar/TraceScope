@@ -590,16 +590,9 @@ The `analyze()` method runs these steps:
 7. **Train flow model** — MDN (mixture density network) or RBF (radial basis function) learns velocity field from the trajectory
 8. **Build velocity grid** — configurable grid (default 40³) of pre-computed velocities for fast trilinear interpolation
 
-## Project Structure
+## Final notes
+> Warning: TraceScope is experimental research software.
+> The older 0.1.x releases were published before proper prerelease tagging
+> and should not be interpreted as stable. For current builds, pin an
+> explicit alpha version such as `tracescope==0.2.0a5`.
 
-```
-tracescope/
-  analysis/       # Pipeline, clustering, dim reduction, MDN, explainer
-  models/         # TraceEntry, TraceSession, AnalysisResult, AxisInfo
-  providers/      # Embedding (OpenAI) and LLM (OpenAI/Anthropic) providers
-  storage/        # ChromaDB vector store + SQLite cache
-  visualization/  # 3D renderer (vispy), flow field system, probe
-  query.py        # TraceQuery programmatic API
-  config.py       # TraceScopeConfig
-  prompts.py      # All LLM prompt templates
-```
