@@ -63,7 +63,7 @@ def launch_renderer(*args, **kwargs):
     return _launch(*args, **kwargs)
 
 
-__version__ = "0.2.0a4"
+__version__ = "0.2.0a5"
 
 __all__ = [
     "TraceScopeConfig",

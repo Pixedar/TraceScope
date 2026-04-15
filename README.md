@@ -117,10 +117,10 @@ python examples/swe_agent.py
 
 ```bash
 # Full install — GPU renderer, MDN flow models, all LLM providers
-pip install tracescope==0.2.0a4
+pip install tracescope==0.2.0a5
 ```
 
-> **Note:** TraceScope is currently in alpha. Pinning the exact version (`==0.2.0a4`) tells pip to install this pre-release without using the global `--pre` flag, which would otherwise pull beta/RC versions of other dependencies.
+> **Note:** TraceScope is currently in alpha. Pinning the exact version (`==0.2.0a5`) tells pip to install this pre-release without using the global `--pre` flag, which would otherwise pull beta/RC versions of other dependencies.
 
 **Lighter variants** (use `--no-deps` to skip the full dependency tree):
 
@@ -128,10 +128,10 @@ pip install tracescope==0.2.0a4
 # CPU-only — renderer + all features, no PyTorch (RBF flow still works)
 # Note: all results shown in the "Concrete Examples" section were tested
 # using the full GPU PyTorch version, not this CPU-only install.
-pip install --no-deps tracescope==0.2.0a4 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
+pip install --no-deps tracescope==0.2.0a5 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
 
 # API-only — analysis pipeline, no GUI, no PyTorch
-pip install --no-deps tracescope==0.2.0a4 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
+pip install --no-deps tracescope==0.2.0a5 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
 **Linux users** — install the Qt platform dependency (required for the 3D renderer):
