@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tracescope"
-version = "0.2.0a3"
+version = "0.2.0a4"
 description = "Embed, cluster, and visualize any text collection in 3D semantic space with learned flow fields"
 readme = "README.md"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"

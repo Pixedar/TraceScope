@@ -15,6 +15,10 @@ Use it in two ways:
 - **Interactive GUI** for visual exploration, interpretability, and presentation
 - **Lightweight API** for integration into LLM agents, observability pipelines, research tools, and semantic monitoring systems
 
+## Which flow model should you use?
+
+TraceScope currently defaults to the more conservative `mdn` flow model, but for most users I recommend `rbf`: it is usually faster, does not require PyTorch, and often preserves richer local structure in the 3D semantic flow. Use `mdn` when you want a coarse, stable global overview or extra smoothing on noisy data; use `rbf` when you want finer attractor structure and higher-quality flow fields. Set it either in `TraceScopeConfig(flow_mode="rbf")`, in `pipeline.analyze(..., flow_mode="rbf")`, or by running an example with `--rbf`.
+
 ## Why TraceScope
 
 Most embedding tools show a static cloud of points. TraceScope goes further:
@@ -26,8 +30,39 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 
 ## Concrete Examples
 
+The **main showcase** is PRM800K below. The other two are **additional examples** showing the same workflow on synthetic tech-news trajectories and autonomous software-engineering traces.
+
 <details>
-<summary><b>AI & Tech News Headlines: Where is the industry flowing?</b></summary>
+<summary><b>Main example — PRM800K: The shape of mathematical reasoning</b></summary>
+
+438 step-by-step math reasoning chains from [PRM800K](https://github.com/openai/prm800k) (MIT license) — each chain is labeled `solved` or `found_error` (binary, perfectly complementary). Overall 65% of paths have errors, only 35% solve correctly. This example uses the **RBF flow model instead of MDN** because it yielded better, clearer results on this dataset. TraceScope's RBF flow reveals *where* in the reasoning space success and failure live — and how reasoning drifts between them.
+
+<p align="center">
+  <img src="docs/assets/prm_demo.gif" alt="PRM800K RBF flow with found_error coloring" width="800">
+</p>
+
+**What TraceScope found:**
+
+In this run, the RBF flow discovers **four attractor basins** — stable endpoints where reasoning converges. **every attractor basin has a lower error rate than the 65% dataset average**. Flow convergence itself is a signal of quality — when reasoning settles into a stable pattern, it outperforms the average.
+
+The best-performing attractor (A3: 62% solved) is the most *formulaic* (72%) and strongly *concrete* (67%) — structured formula application grounded in specific numbers yielding decisive proofs. The worst-performing attractor (A4: 60% error) has dramatically lower *enumerative emphasis* (11% vs 42-67% for others) and sits deep in the abstract algebraic-sequence zone. The flow field suggests that skipping thorough case enumeration and jumping to abstract pattern-matching correlates with sharply higher errors.
+
+Probe paths reveal that reasoning quality is not a one-way street. Paths don't simply "improve" or "degrade" — they oscillate, crossing between attractor zones with scores swinging sharply. One path starts perfect (solved=1.0), crashes to complete failure (found_error=1.0) within 15% of its journey as it drifts into A4, and never recovers. Another crosses all three zones (A1->A3->A2), with errors spiking during each basin transition before partially recovering. A2 emerges as the strongest recovery attractor: one path enters it at 100% error and recovers to 80% solved within 30% of the journey.
+
+The most common pattern: **paths that stay within a single attractor basin maintain bounded oscillation, while basin-crossing paths experience score turbulence during the transition.** This suggests that shifting reasoning strategy mid-problem is risky — the intermediate zone between stable modes is where errors spike.
+
+**Run it yourself:**
+
+> [!WARNING]
+> Even though this example locks seeds for local computation, upstream embedding / LLM providers are not guaranteed to be bitwise deterministic. You may therefore see small run-to-run differences in axes, cluster boundaries, attractor counts, or basin shapes. For serious experiments, rerun and test attractor-basin sensitivity before drawing strong conclusions.
+
+```bash
+python examples/prm_demo.py
+```
+</details>
+
+<details>
+<summary><b>Additional example — AI & Tech News Headlines: Where is the industry flowing?</b></summary>
 
 ~350 synthetic news headlines spanning AI, chips, climate, energy, biotech, space, and more — a synthetic test to demonstrate what TraceScope reveals. In a real deployment you'd use actual news feeds.
 
@@ -38,55 +73,40 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 **What TraceScope found:**
 - **Axes:** *Embodiment Gradient* (abstract AI → physical robotics), *Operational Centralization* (distributed → centralized), *Autonomy Level* (human-directed → fully autonomous)
 - **Clusters:** AI Compute Expansion, Warehouse Orchestration, AI Office Copilots, Real-time Production AI
-- **Three global attractors** emerged — both pulling toward centralized, real-time operations, the strongest are:
-  - **A1** : A centralized warehouse orchestration control plane — AI unifying visibility and execution across inventory, orders, labor, equipment, and logistics. The flow suggests industry trajectories converge toward a single AI layer coordinating embodied processes.
-  - **A2**: A real-time production stabilizer — AI predicting bottlenecks, rerouting around machine failures, auto-triggering replenishment. A "plant-floor nervous system" keeping production lines stable.
+- In typical runs, the flow reveals a **small number of global attractors** — often two or three — that pull toward centralized, real-time, operational AI.
 
-Both attractors suggest the semantic flow of tech news converges toward centralized AI orchestration of physical operations — not just software intelligence, but real-world coordination.
+The exact attractor count can vary slightly across runs and providers, but the big-picture pattern is stable: the semantic flow repeatedly converges toward AI systems that coordinate physical operations, unify visibility with execution, and stabilize real-world processes in real time. That underlying directional structure is much clearer in the flow than in the raw point cloud alone.
 
 **Note:** This uses synthetic headlines for demonstration. In practice, feed in real news data for genuine industry insights.
 
 **Run it yourself:**
+
+> [!WARNING]
+> Even though this example locks seeds for local computation, upstream embedding / LLM providers are not guaranteed to be bitwise deterministic. You may therefore see small run-to-run differences in axes, cluster boundaries, attractor counts, or basin shapes. For serious experiments, rerun and test attractor-basin sensitivity before drawing strong conclusions.
+
 ```bash
 python examples/ai_news_headlines.py
 ```
 </details>
 
 <details>
-<summary><b>PRM800K: The shape of mathematical reasoning</b></summary>
-
-438 step-by-step math reasoning chains from [PRM800K](https://github.com/openai/prm800k) (MIT license) — a dataset of human-labeled process reward model training data. Each path is a chain of reasoning steps with per-step quality ratings. An experiment to see the overall shape and flow of mathematical reasoning in an LLM.
-
-<p align="center">
-  <img src="docs/assets/prm_demo.gif" alt="PRM800K math reasoning flow with found_error coloring" width="800">
-</p>
-
-**What TraceScope found:**
-- **Axes:** *Symbolic↔Numeric* (abstract symbols vs concrete numbers), *Formulaic↔Combinatorics* (closed-form algebra vs counting/enumeration), *Notation Density* (sparse reasoning → heavy symbolic manipulation)
-- **Clusters:** Triangle Centroid Geometry, Algebraic Term Manipulation, Number Pattern Solving
-- **Flow + found_error coloring** revealed a continuous reasoning corridor with **four local attractors**, not just three static clusters.
-- The strongest attractor (**A1**) sits in a sharply **error-associated** basin: trajectories converge toward tidy, computation-heavy numeric endgames that often terminate at the **first detected error**.
-- A nearby attractor (**A4**) is strongly **success-associated**, suggesting many math failures come from **fine-grained mistakes inside otherwise very similar symbolic reasoning styles**, not from entering a completely different region of thought.
-- A more distant attractor (**A2**) forms an alternate successful basin, while **A3** appears mixed — showing that outcome depends on **local flow dynamics inside a cluster family**, not cluster identity alone.
-
-**Run it yourself:**
-```bash
-python examples/prm_demo.py
-```
-</details>
-
-<details>
-<summary><b>SWE-agent: Hidden attractors in software engineering traces</b></summary>
+<summary><b>Additional example — SWE-agent: Hidden attractors in software engineering traces</b></summary>
 
 Running TraceScope on the [SWE-agent trajectories](https://huggingface.co/datasets/nebius/SWE-agent-trajectories) dataset (CC-BY-4.0) — real thought/action/observation cycles from an autonomous coding agent working on GitHub issues.
 
 <p align="center">
-  <img src="docs/assets/swe_agent.gif" alt="SWE-agent flow showing two attractors" width="800">
+  <img src="docs/assets/swe_agent.gif" alt="SWE-agent flow showing global attractors" width="800">
 </p>
 
-The MDN flow field discovered **two global attractors** even though the cluster distribution gave no hint of their existence. Traditional tools would show you clusters — TraceScope shows you the *currents* that pull agent behavior, computed from actual trajectory paths rather than static point distributions.
+The MDN flow field typically uncovers **multiple global attractors** — often around two, sometimes more — even though the cluster distribution alone gives little hint of their existence. Traditional tools would show you clusters — TraceScope shows you the *currents* that pull agent behavior, computed from actual trajectory paths rather than static point distributions.
+
+The exact attractor count can vary a bit across runs and providers, but the big picture is stable: the traces contain latent dynamical modes of agent behavior that are not obvious from the datapoints alone.
 
 **Run it yourself:**
+
+> [!WARNING]
+> Even though this example locks seeds for local computation, upstream embedding / LLM providers are not guaranteed to be bitwise deterministic. You may therefore see small run-to-run differences in axes, cluster boundaries, attractor counts, or basin shapes. For serious experiments, rerun and test attractor-basin sensitivity before drawing strong conclusions.
+
 ```bash
 python examples/swe_agent.py
 ```
@@ -97,10 +117,10 @@ python examples/swe_agent.py
 
 ```bash
 # Full install — GPU renderer, MDN flow models, all LLM providers
-pip install tracescope==0.2.0a3
+pip install tracescope==0.2.0a4
 ```
 
-> **Note:** TraceScope is currently in alpha. Pinning the exact version (`==0.2.0a2`) tells pip to install this pre-release without using the global `--pre` flag, which would otherwise pull beta/RC versions of other dependencies.
+> **Note:** TraceScope is currently in alpha. Pinning the exact version (`==0.2.0a4`) tells pip to install this pre-release without using the global `--pre` flag, which would otherwise pull beta/RC versions of other dependencies.
 
 **Lighter variants** (use `--no-deps` to skip the full dependency tree):
 
@@ -108,10 +128,10 @@ pip install tracescope==0.2.0a3
 # CPU-only — renderer + all features, no PyTorch (RBF flow still works)
 # Note: all results shown in the "Concrete Examples" section were tested
 # using the full GPU PyTorch version, not this CPU-only install.
-pip install --no-deps tracescope==0.2.0a3 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
+pip install --no-deps tracescope==0.2.0a4 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-cpu.txt
 
 # API-only — analysis pipeline, no GUI, no PyTorch
-pip install --no-deps tracescope==0.2.0a3 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
+pip install --no-deps tracescope==0.2.0a4 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
 **Linux users** — install the Qt platform dependency (required for the 3D renderer):
@@ -486,6 +506,7 @@ config = TraceScopeConfig(
     param_range=[5, 10, ..., 195],   # By default, UMAP searches the full range from 5 to 195 in steps of 5 which is slow; for much faster runs, you can provide only one or two values to search, but this will usually reduce quality
     rbf_kernel="thin_plate_spline",  # RBF kernel (see below)
     rbf_smoothing=0.1,               # RBF regularization (0 = exact)
+    deterministic=True,              # seed all RNGs for reproducible results
 )
 ```
 
@@ -495,11 +516,27 @@ config = TraceScopeConfig(
 > ```
 > You can use any OpenAI chat model — just pass its name to `llm_model` / `llm_model_complex`.
 
+### Determinism
+
+By default, all random number generators (UMAP, KMeans, MDN, attractor detection) are seeded for the most reproducible **local** results possible across runs on the same platform.
+
+> **Important:** `deterministic=True` only controls randomness inside TraceScope itself. Results can still differ slightly across runs because upstream embedding / LLM providers are not guaranteed to be bitwise deterministic, and provider-side models can also change over time. In practice, that can shift projections, cluster boundaries, labels, attractor counts, or basin shapes even when local seeds are fixed.
+
+To disable deterministic seeding (e.g., to explore different flow topologies):
+```python
+config = TraceScopeConfig(deterministic=False)
+```
+
+All example scripts also support `--rbf` to use the RBF flow model instead of MDN:
+```bash
+python examples/prm_demo.py --rbf
+```
+
 ### Flow Models
 
 TraceScope supports two flow field models for learning velocity fields from your semantic trajectories:
 
-**MDN (Mixture Density Network)** — Default. A 2-component neural network that learns a probabilistic velocity field. Best for complex, multi-modal flow patterns. Requires PyTorch.
+**MDN (Mixture Density Network)** — Default. A conservative 2-component neural network that learns a probabilistic velocity field. Best when you want a coarse, stable global overview or when extra smoothing helps on noisy data. Requires PyTorch.
 
 ```python
 result = pipeline.analyze(session,
@@ -510,7 +547,7 @@ result = pipeline.analyze(session,
 )
 ```
 
-**RBF (Radial Basis Function)** — Lightweight alternative using scipy's `RBFInterpolator`. Produces smoother, more conservative flows. No PyTorch required — uses only scipy.
+**RBF (Radial Basis Function)** — Recommended for most users. Lightweight alternative using scipy's `RBFInterpolator`. Usually faster to compute, requires no PyTorch, and often preserves richer local structure with more distinct attractor basins in the 3D projected space.
 
 ```python
 result = pipeline.analyze(session,
