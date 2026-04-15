@@ -30,8 +30,8 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 
 ## Concrete Examples
 
-The **main showcase** is PRM800K below. The other two are **additional examples** showing the same workflow on synthetic tech-news trajectories and autonomous software-engineering traces.
-
+The **main showcase** is PRM800K below. 
+These examples are **illustrative demonstrations** of how TraceScope works. They are meant to show the kinds of semantic structure and flow patterns the tool can reveal, **not** to serve as peer-reviewed empirical claims or definitive scientific conclusions
 <details>
 <summary><b>Main example — PRM800K: The shape of mathematical reasoning</b></summary>
 
