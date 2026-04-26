@@ -1,4 +1,4 @@
-````# TraceScope
+# TraceScope
 
 <p align="center">
   <img src="docs/assets/demo_v_3.gif" alt="TraceScope demo animation" width="950">
