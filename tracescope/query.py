@@ -256,6 +256,72 @@ class TraceQuery:
 
         return result_v
 
+    def _estimate_settling_times(
+        self,
+        attractors: List[dict],
+        n_samples: int = 500,
+        max_steps: int = 400,
+        eps: float = 1e-3,
+        seed: int = 42,
+    ) -> List[Optional[float]]:
+        """For ``n_samples`` random points inside the bounding box, run
+        a fixed-step forward integration and record how many steps it
+        takes to either drop below ``eps`` velocity or exit the box.
+
+        Returns a list of length ``n_samples`` where each entry is the
+        settled step count (as a float), or ``None`` if the trajectory
+        did not converge inside ``max_steps``.
+
+        Used internally by ``topology_summary``; safe to call without a
+        flow field (returns an empty list)."""
+        r = self._result
+        if r.velocity_grid is None or r.axis_min is None or r.axis_max is None:
+            return []
+        rng = np.random.default_rng(int(seed))
+        axis_min = np.asarray(r.axis_min, dtype=np.float64)
+        axis_max = np.asarray(r.axis_max, dtype=np.float64)
+        span = axis_max - axis_min
+        if not np.all(span > 0):
+            return []
+
+        G = r.velocity_grid.shape[0]
+        # Coarse "in-basin" mask if attractors expose basin_mask;
+        # used to early-exit a trajectory the moment it enters one.
+        basin_union = None
+        if attractors:
+            for att in attractors:
+                bm = att.get("basin_mask")
+                if bm is None or bm.shape != (G, G, G):
+                    continue
+                basin_union = bm if basin_union is None else (basin_union | bm)
+
+        dt = 0.05  # flow-time per step — matches scale of velocity grid
+        out: List[Optional[float]] = []
+        for _ in range(int(n_samples)):
+            x = axis_min + rng.random(3) * span
+            settled: Optional[float] = None
+            for step in range(int(max_steps)):
+                v = self._sample_velocity(x.astype(np.float32))
+                if v is None:
+                    break
+                speed = float(np.linalg.norm(v))
+                if speed < eps:
+                    settled = float(step)
+                    break
+                if basin_union is not None:
+                    gi = (
+                        np.clip(((x - axis_min) / span * (G - 1)).astype(int),
+                                0, G - 1)
+                    )
+                    if bool(basin_union[gi[0], gi[1], gi[2]]):
+                        settled = float(step)
+                        break
+                x = x + np.asarray(v, dtype=np.float64) * dt
+                if np.any(x < axis_min) or np.any(x > axis_max):
+                    break
+            out.append(settled)
+        return out
+
     def _decompose_vector(
         self,
         point_3d: np.ndarray,
@@ -667,3 +733,526 @@ class TraceQuery:
 
         path.reverse()
         return path
+
+    # ─── Method 6: topology_summary ───────────────────────────────────
+
+    def topology_summary(
+        self,
+        n_settling_samples: int = 500,
+        max_settling_steps: int = 400,
+        settling_eps: float = 1e-3,
+        score_channel: Optional[str] = None,
+    ) -> dict:
+        """Summarize the topology of the learned semantic flow field.
+
+        Computes attractors, basin sizes, mean settling time, transition
+        turbulence (curl / speed) and Jacobian-based stability over the
+        velocity grid.  All metrics are derived from the existing
+        ``velocity_grid`` — no new training is performed.
+
+        These are *analysis-layer* topology metrics extracted from the flow
+        field that TraceScope already learned.  They do not guarantee any
+        property of the underlying language model itself.
+
+        Args:
+            n_settling_samples: Number of random initial points sampled
+                inside the bounding box for the mean-settling-time
+                estimate. Higher = more accurate but slower.
+            max_settling_steps: Cap on integration steps per sample
+                before declaring the trajectory non-converging.
+            settling_eps: Velocity magnitude below which a trajectory
+                is considered "settled" into an attractor.
+            score_channel: Optional score channel for per-attractor
+                ``mean_score`` (forwarded to ``find_attractors``).
+
+        Returns:
+            dict with keys:
+              attractors (list of attractor dicts, ``basin_mask`` removed
+                  for JSON-friendliness; original is preserved under
+                  ``basin_mask`` if present),
+              basin_sizes (list[int]),
+              basin_fractions (list[float]),
+              n_attractors (int),
+              mean_settling_time (float | None),
+              median_settling_time (float | None),
+              fraction_converged (float),
+              transition_turbulence (float | None),
+              jacobian_stability (dict with spectral_radius_*/divergence_*),
+              unstable_regions (list of {position_3d, spectral_radius}),
+              has_flow (bool).
+        """
+        r = self._result
+        out = {
+            "has_flow": r.velocity_grid is not None,
+            "attractors": [],
+            "basin_sizes": [],
+            "basin_fractions": [],
+            "n_attractors": 0,
+            "mean_settling_time": None,
+            "median_settling_time": None,
+            "fraction_converged": 0.0,
+            "transition_turbulence": None,
+            "jacobian_stability": None,
+            "unstable_regions": [],
+        }
+        if r.velocity_grid is None or r.axis_min is None or r.axis_max is None:
+            return out
+
+        # ── Attractors + basin info ─────────────────────────────────
+        try:
+            attractors = r.find_attractors(score_channel=score_channel)
+        except Exception as e:
+            logger.warning(f"find_attractors failed in topology_summary: {e}")
+            attractors = []
+
+        basin_sizes = []
+        basin_fractions = []
+        att_serializable = []
+        for i, att in enumerate(attractors):
+            basin_sizes.append(int(att.get("basin_size", 0)))
+            basin_fractions.append(float(att.get("basin_fraction", 0.0)))
+            pos = att.get("position")
+            att_serializable.append({
+                "id": i,
+                "position_3d": pos.tolist() if hasattr(pos, "tolist") else list(pos),
+                "strength": float(att.get("strength", 0.0)),
+                "divergence": float(att.get("divergence", 0.0)),
+                "basin_size": int(att.get("basin_size", 0)),
+                "basin_fraction": float(att.get("basin_fraction", 0.0)),
+                "mean_score": (
+                    float(att["mean_score"])
+                    if att.get("mean_score") is not None else None
+                ),
+            })
+        out["attractors"] = att_serializable
+        out["basin_sizes"] = basin_sizes
+        out["basin_fractions"] = basin_fractions
+        out["n_attractors"] = len(attractors)
+
+        # ── Mean settling time via short forward integration ────────
+        try:
+            settling_times = self._estimate_settling_times(
+                attractors=attractors,
+                n_samples=int(n_settling_samples),
+                max_steps=int(max_settling_steps),
+                eps=float(settling_eps),
+            )
+        except Exception as e:
+            logger.warning(f"settling-time estimation failed: {e}")
+            settling_times = []
+
+        finite = [t for t in settling_times if t is not None]
+        if settling_times:
+            out["fraction_converged"] = float(len(finite) / len(settling_times))
+        if finite:
+            out["mean_settling_time"] = float(np.mean(finite))
+            out["median_settling_time"] = float(np.median(finite))
+
+        # ── Transition turbulence: mean curl / (speed + eps) ────────
+        try:
+            vg = r.velocity_grid
+            speed = np.linalg.norm(vg, axis=3)
+            dvz_dy = np.gradient(vg[:, :, :, 2], axis=1)
+            dvy_dz = np.gradient(vg[:, :, :, 1], axis=2)
+            dvx_dz = np.gradient(vg[:, :, :, 0], axis=2)
+            dvz_dx = np.gradient(vg[:, :, :, 2], axis=0)
+            dvy_dx = np.gradient(vg[:, :, :, 1], axis=0)
+            dvx_dy = np.gradient(vg[:, :, :, 0], axis=1)
+            curl_mag = np.sqrt(
+                (dvz_dy - dvy_dz) ** 2
+                + (dvx_dz - dvz_dx) ** 2
+                + (dvy_dx - dvx_dy) ** 2
+            )
+            speed_ref = float(np.percentile(speed, 90)) if speed.size else 0.0
+            if speed_ref > 1e-12:
+                turbulence = float(
+                    np.mean(curl_mag / (speed + speed_ref * 1e-3))
+                )
+                out["transition_turbulence"] = round(turbulence, 6)
+        except Exception as e:
+            logger.warning(f"turbulence computation failed: {e}")
+
+        # ── Jacobian stability summary over the velocity grid ───────
+        try:
+            grid = self.stability_grid()
+            sr = grid["spectral_radius"]
+            dv = grid["divergence"]
+            out["jacobian_stability"] = {
+                "spectral_radius_mean": float(np.mean(sr)),
+                "spectral_radius_median": float(np.median(sr)),
+                "spectral_radius_p90": float(np.percentile(sr, 90)),
+                "spectral_radius_max": float(np.max(sr)),
+                "divergence_mean": float(np.mean(dv)),
+                "divergence_negative_fraction": float(
+                    np.mean(dv < 0.0)
+                ),
+            }
+            # Top-K unstable regions by spectral radius
+            G = sr.shape[0]
+            flat = sr.reshape(-1)
+            k = min(10, flat.size)
+            if k > 0:
+                top_idx = np.argpartition(-flat, k - 1)[:k]
+                top_idx = top_idx[np.argsort(-flat[top_idx])]
+                axis_min = r.axis_min
+                axis_max = r.axis_max
+                span = axis_max - axis_min
+                unstable = []
+                for fi in top_idx:
+                    ix, iy, iz = np.unravel_index(int(fi), sr.shape)
+                    pos = np.array([
+                        axis_min[0] + ix / max(G - 1, 1) * span[0],
+                        axis_min[1] + iy / max(G - 1, 1) * span[1],
+                        axis_min[2] + iz / max(G - 1, 1) * span[2],
+                    ], dtype=np.float32)
+                    unstable.append({
+                        "position_3d": pos.tolist(),
+                        "spectral_radius": float(sr[ix, iy, iz]),
+                        "divergence": float(dv[ix, iy, iz]),
+                    })
+                out["unstable_regions"] = unstable
+        except Exception as e:
+            logger.warning(f"jacobian stability computation failed: {e}")
+
+        return out
+
+    # ─── Method 7: integrate_flow ────────────────────────────────────
+
+    def integrate_flow(
+        self,
+        text: str,
+        method: str = "rk45",
+        max_time: float = 25.0,
+        convergence_eps: float = 1e-3,
+        max_steps: int = 5000,
+    ) -> dict:
+        """ODE-style probing of the learned semantic flow field.
+
+        Integrates ``dx/dt = velocity_field(x)`` from the embedding of
+        ``text`` until either the speed drops below ``convergence_eps``
+        (settled into an attractor), the trajectory leaves the bounding
+        box, or ``max_time`` is reached.
+
+        This is *analysis-layer* probing of the velocity field that
+        TraceScope already learned.  It is **not** training a Neural
+        ODE — TraceScope's flow model (MDN or RBF) is not parameterised
+        as a continuous-depth neural net.  Neural ODE language only
+        applies at the analysis layer (we use an ODE solver to walk
+        the existing learned field).
+
+        Args:
+            text: Input text — embedded and projected into 3D.
+            method: One of {"rk45", "euler"}. ``rk45`` uses
+                ``scipy.integrate.solve_ivp`` (RK45 with adaptive step).
+                ``euler`` is a lightweight fixed-step fallback.
+            max_time: Integration horizon in flow-time units.
+            convergence_eps: Speed threshold below which the trajectory
+                is considered settled.
+            max_steps: Hard cap on Euler steps (ignored for rk45).
+
+        Returns:
+            dict with keys:
+                trajectory_3d (list[[x,y,z]]),
+                times (list[float]),
+                final_position (list[float]),
+                final_speed (float),
+                settling_time (float | None),
+                attractor_id (int | None),
+                converged (bool),
+                method (str),
+                escaped (bool),
+                source ("integrate_flow").
+        """
+        r = self._result
+        if r.velocity_grid is None or r.axis_min is None or r.axis_max is None:
+            raise RuntimeError(
+                "No velocity grid available. integrate_flow needs a flow "
+                "field — run pipeline.analyze() with train_flow=True."
+            )
+
+        embeddings = self._embed_texts([text])
+        projected = self._project_to_3d(embeddings)
+        x0 = np.asarray(projected[0], dtype=np.float64)
+
+        axis_min = np.asarray(r.axis_min, dtype=np.float64)
+        axis_max = np.asarray(r.axis_max, dtype=np.float64)
+        span = axis_max - axis_min
+        # Pad bounding box very slightly so a probe starting on the
+        # boundary doesn't immediately get flagged as "escaped".
+        pad = np.where(span > 0, span * 0.05, 1e-6)
+        bb_lo = axis_min - pad
+        bb_hi = axis_max + pad
+
+        method_lc = (method or "rk45").lower()
+
+        def _vel(x: np.ndarray) -> np.ndarray:
+            v = self._sample_velocity(np.asarray(x, dtype=np.float32))
+            if v is None:
+                return np.zeros(3, dtype=np.float64)
+            return np.asarray(v, dtype=np.float64)
+
+        traj = [x0.copy()]
+        times_out = [0.0]
+        settling_time: Optional[float] = None
+        escaped = False
+        converged = False
+
+        if method_lc in ("rk45", "rk23", "dop853", "lsoda", "radau", "bdf"):
+            try:
+                from scipy.integrate import solve_ivp
+            except ImportError as e:
+                raise RuntimeError(
+                    "scipy.integrate.solve_ivp is required for method='rk45'."
+                ) from e
+
+            def rhs(t, x):
+                return _vel(x)
+
+            # Event: speed below threshold (settled)
+            def settled_event(t, x):
+                v = _vel(x)
+                return float(np.linalg.norm(v)) - convergence_eps
+            settled_event.terminal = True
+            settled_event.direction = -1
+
+            # Event: left bounding box
+            def escaped_event(t, x):
+                d = np.concatenate([x - bb_lo, bb_hi - x])
+                return float(np.min(d))
+            escaped_event.terminal = True
+            escaped_event.direction = -1
+
+            method_map = {
+                "rk45": "RK45", "rk23": "RK23", "dop853": "DOP853",
+                "lsoda": "LSODA", "radau": "Radau", "bdf": "BDF",
+            }
+            sol = solve_ivp(
+                rhs, (0.0, float(max_time)), x0,
+                method=method_map[method_lc],
+                events=[settled_event, escaped_event],
+                max_step=float(max_time) / 50.0 if max_time > 0 else 0.1,
+                dense_output=False,
+                rtol=1e-4, atol=1e-6,
+            )
+            ys = sol.y.T  # (n_points, 3)
+            ts = sol.t
+            traj = [row.copy() for row in ys]
+            times_out = ts.tolist()
+
+            # Determine which event fired (if any)
+            settled_events = sol.t_events[0] if len(sol.t_events) > 0 else np.array([])
+            escape_events = sol.t_events[1] if len(sol.t_events) > 1 else np.array([])
+            if settled_events.size > 0:
+                converged = True
+                settling_time = float(settled_events[0])
+            if escape_events.size > 0:
+                escaped = True
+
+        else:
+            # Fixed-step Euler fallback
+            x = x0.copy()
+            t = 0.0
+            dt = float(max_time) / float(max_steps) if max_steps > 0 else 0.02
+            for _step in range(int(max_steps)):
+                v = _vel(x)
+                speed = float(np.linalg.norm(v))
+                if speed < convergence_eps:
+                    converged = True
+                    settling_time = t
+                    break
+                x = x + v * dt
+                t += dt
+                if np.any(x < bb_lo) or np.any(x > bb_hi):
+                    escaped = True
+                    break
+                traj.append(x.copy())
+                times_out.append(t)
+                if t >= max_time:
+                    break
+
+        final_pos = np.asarray(traj[-1], dtype=np.float64)
+        final_speed = float(np.linalg.norm(_vel(final_pos)))
+
+        # Attractor matching: find the nearest attractor whose basin
+        # contains the final position (if any).  If basin_mask is
+        # available we use it; otherwise fall back to nearest-position.
+        attractor_id: Optional[int] = None
+        if converged:
+            try:
+                attractors = r.find_attractors()
+            except Exception as e:
+                logger.warning(f"attractor lookup failed: {e}")
+                attractors = []
+            if attractors:
+                # Try basin-mask membership first
+                G = r.velocity_grid.shape[0]
+                gi = np.zeros(3, dtype=int)
+                for a in range(3):
+                    if span[a] > 0:
+                        gi[a] = int(np.clip(
+                            (final_pos[a] - axis_min[a]) / span[a] * (G - 1),
+                            0, G - 1,
+                        ))
+                for ai, att in enumerate(attractors):
+                    bm = att.get("basin_mask")
+                    if bm is not None and bm.shape == (G, G, G):
+                        if bool(bm[gi[0], gi[1], gi[2]]):
+                            attractor_id = ai
+                            break
+                if attractor_id is None:
+                    # Fallback: nearest attractor position
+                    dists = [
+                        float(np.linalg.norm(final_pos - np.asarray(a["position"])))
+                        for a in attractors
+                    ]
+                    attractor_id = int(np.argmin(dists))
+
+        return {
+            "text": text,
+            "method": method_lc,
+            "trajectory_3d": [list(map(float, p)) for p in traj],
+            "times": [float(t) for t in times_out],
+            "final_position": final_pos.tolist(),
+            "final_speed": round(final_speed, 8),
+            "settling_time": settling_time,
+            "attractor_id": attractor_id,
+            "converged": bool(converged),
+            "escaped": bool(escaped),
+            "source": "integrate_flow",
+        }
+
+    # ─── Method 8: numerical Jacobian diagnostics ────────────────────
+
+    def _numerical_jacobian(
+        self,
+        point_3d: np.ndarray,
+        h: Optional[float] = None,
+    ) -> Optional[np.ndarray]:
+        """Estimate the local 3×3 Jacobian of the velocity field via
+        central differences.  Returns None when no flow field is
+        available."""
+        r = self._result
+        if r.velocity_grid is None or r.axis_min is None or r.axis_max is None:
+            return None
+        span = np.asarray(r.axis_max - r.axis_min, dtype=np.float64)
+        # Default step = a small fraction of the grid cell so we sample
+        # *across* a cell, not within numerical noise.
+        if h is None:
+            G = r.velocity_grid.shape[0]
+            cell = span / max(G - 1, 1)
+            h_vec = np.maximum(cell * 0.5, 1e-6)
+        else:
+            h_vec = np.full(3, float(h), dtype=np.float64)
+        x = np.asarray(point_3d, dtype=np.float64)
+        J = np.zeros((3, 3), dtype=np.float64)
+        for j in range(3):
+            ej = np.zeros(3, dtype=np.float64)
+            ej[j] = h_vec[j]
+            v_plus = self._sample_velocity((x + ej).astype(np.float32))
+            v_minus = self._sample_velocity((x - ej).astype(np.float32))
+            if v_plus is None or v_minus is None:
+                return None
+            J[:, j] = (np.asarray(v_plus, dtype=np.float64)
+                       - np.asarray(v_minus, dtype=np.float64)) / (2.0 * h_vec[j])
+        return J
+
+    def local_stability_at(self, text: str) -> dict:
+        """Estimate local stability of the flow field at the position
+        of ``text`` via a numerical Jacobian.
+
+        Returns spectral radius (max |eigenvalue|), divergence
+        (trace of J), and the eigenvalues themselves.  Higher
+        spectral radius → faster local divergence/convergence;
+        negative trace → on-net contracting (attractor-like).
+        """
+        r = self._result
+        if r.velocity_grid is None or r.axis_min is None or r.axis_max is None:
+            raise RuntimeError(
+                "No velocity grid available. local_stability_at needs a "
+                "flow field — run pipeline.analyze() with train_flow=True."
+            )
+        embeddings = self._embed_texts([text])
+        projected = self._project_to_3d(embeddings)
+        pt = projected[0]
+        J = self._numerical_jacobian(pt)
+        if J is None:
+            raise RuntimeError(
+                "Failed to compute numerical Jacobian (no flow field)."
+            )
+        eigvals = np.linalg.eigvals(J)
+        spectral_radius = float(np.max(np.abs(eigvals)))
+        divergence = float(np.trace(J))
+        return {
+            "text": text,
+            "position_3d": [float(x) for x in pt],
+            "jacobian": J.tolist(),
+            "eigenvalues_real": [float(v.real) for v in eigvals],
+            "eigenvalues_imag": [float(v.imag) for v in eigvals],
+            "spectral_radius": round(spectral_radius, 8),
+            "divergence": round(divergence, 8),
+            "is_locally_attracting": bool(divergence < 0),
+            "source": "local_stability_at",
+        }
+
+    def stability_grid(self, resolution: Optional[int] = None) -> dict:
+        """Return per-cell numerical stability statistics over the
+        velocity grid.
+
+        Uses ``np.gradient`` over the velocity grid to build the full
+        spatial Jacobian per cell, then returns the spectral radius
+        (max |eigenvalue|) and divergence (trace) at each cell.
+
+        Args:
+            resolution: Optional output resolution.  If smaller than
+                the underlying grid, a stride is applied so callers can
+                trade detail for speed.  Defaults to the grid resolution.
+
+        Returns:
+            dict with keys:
+                spectral_radius (np.ndarray[G,G,G]),
+                divergence (np.ndarray[G,G,G]),
+                axis_min (list[3]), axis_max (list[3]),
+                grid_size (int).
+        """
+        r = self._result
+        if r.velocity_grid is None or r.axis_min is None or r.axis_max is None:
+            raise RuntimeError(
+                "No velocity grid available. stability_grid needs a "
+                "flow field — run pipeline.analyze() with train_flow=True."
+            )
+        vg = r.velocity_grid.astype(np.float64)
+        G = vg.shape[0]
+        # Spacing = (axis_max - axis_min) / (G - 1) per axis
+        span = np.asarray(r.axis_max - r.axis_min, dtype=np.float64)
+        dx = float(span[0] / max(G - 1, 1))
+        dy = float(span[1] / max(G - 1, 1))
+        dz = float(span[2] / max(G - 1, 1))
+
+        # ∂v_i / ∂x_j  for i,j in {0,1,2}
+        dV0 = np.gradient(vg[..., 0], dx, dy, dz)
+        dV1 = np.gradient(vg[..., 1], dx, dy, dz)
+        dV2 = np.gradient(vg[..., 2], dx, dy, dz)
+        # J[i, j] = dV_i / dx_j
+        J = np.stack([
+            np.stack([dV0[0], dV0[1], dV0[2]], axis=-1),  # i=0
+            np.stack([dV1[0], dV1[1], dV1[2]], axis=-1),  # i=1
+            np.stack([dV2[0], dV2[1], dV2[2]], axis=-1),  # i=2
+        ], axis=-2)  # shape (G,G,G,3,3)
+
+        # Vectorised eigenvalue computation
+        eigvals = np.linalg.eigvals(J)        # (G,G,G,3) complex
+        spectral_radius = np.max(np.abs(eigvals), axis=-1).astype(np.float32)
+        divergence = (J[..., 0, 0] + J[..., 1, 1] + J[..., 2, 2]).astype(np.float32)
+
+        if resolution is not None and 0 < int(resolution) < G:
+            stride = max(1, G // int(resolution))
+            spectral_radius = spectral_radius[::stride, ::stride, ::stride]
+            divergence = divergence[::stride, ::stride, ::stride]
+
+        return {
+            "spectral_radius": spectral_radius,
+            "divergence": divergence,
+            "axis_min": [float(v) for v in r.axis_min],
+            "axis_max": [float(v) for v in r.axis_max],
+            "grid_size": int(spectral_radius.shape[0]),
+        }

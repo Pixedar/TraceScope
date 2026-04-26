@@ -1,4 +1,4 @@
-# TraceScope
+````# TraceScope
 
 <p align="center">
   <img src="docs/assets/demo_v_3.gif" alt="TraceScope demo animation" width="950">
@@ -134,7 +134,7 @@ pip install --no-deps tracescope==0.2.0a5 && pip install -r https://raw.githubus
 pip install --no-deps tracescope==0.2.0a5 && pip install -r https://raw.githubusercontent.com/Pixedar/TraceScope/master/requirements-api.txt
 ```
 
-**Linux users** — install the Qt platform dependency (required for the 3D renderer):
+**Linux users** — install the Qt platform dependency (required for the 3D renderer, skip for API-only use):
 ```bash
 sudo apt-get install libxcb-xinerama0   # Debian/Ubuntu
 ```
@@ -457,6 +457,23 @@ result["start_similarity"]       # how similar are the starting points
 result["end_similarity"]         # how similar are the ending points
 ```
 
+### Topology & flow probing (analysis-layer)
+
+Extra read-only methods that derive topology metrics from the velocity
+field TraceScope already learned (no extra training):
+
+```python
+query.topology_summary()           # attractors, basin_sizes,
+                                   # mean_settling_time, transition_turbulence,
+                                   # jacobian_stability, unstable_regions
+query.integrate_flow(text, method="rk45")   # ODE-style probe (scipy RK45)
+query.local_stability_at(text)              # numerical Jacobian + spectral radius
+query.stability_grid()                      # per-cell stability over the grid
+```
+
+These are descriptions of the learned flow field, not guarantees about
+the underlying language model. See `examples/state_tracking_topology.py`.
+
 ## Visualization
 
 ### Interactive 3D Renderer (`launch_renderer`)
@@ -590,9 +607,14 @@ The `analyze()` method runs these steps:
 7. **Train flow model** — MDN (mixture density network) or RBF (radial basis function) learns velocity field from the trajectory
 8. **Build velocity grid** — configurable grid (default 40³) of pre-computed velocities for fast trilinear interpolation
 
+## Relation to recurrent and continuous-thought model research
+
+Recent work argues that feedforward transformers can struggle with dynamic state tracking because evolving state representations may be pushed deeper through the layer stack, making them hard to reuse at later steps. TraceScope does not modify transformer internals; instead, it provides an external semantic-state lens for observing similar phenomena in model outputs, conversations, and agent traces.
+
 ## Final notes
 > Warning: TraceScope is experimental research software.
 > The older 0.1.x releases were published before proper prerelease tagging
 > and should not be interpreted as stable. For current builds, pin an
 > explicit alpha version such as `tracescope==0.2.0a5`.
 
+````
