@@ -33,7 +33,7 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 The **main showcase** is PRM800K below. 
 These examples are **illustrative demonstrations** of how TraceScope works. They are meant to show the kinds of semantic structure and flow patterns the tool can reveal, **not** to serve as peer-reviewed empirical claims or definitive scientific conclusions
 <details>
-<summary><img src="docs/assets/readme-prm800k-marker.svg" alt="" width="10" height="10"> <b>Main example — PRM800K: The shape of mathematical reasoning</b></summary>
+<summary>🔵 <b>Main example — PRM800K: The shape of mathematical reasoning</b></summary>
 
 438 step-by-step math reasoning chains from [PRM800K](https://github.com/openai/prm800k) (MIT license) — each chain is labeled `solved` or `found_error` (binary, perfectly complementary). Overall 65% of paths have errors, only 35% solve correctly. This example uses the **RBF flow model instead of MDN** because it yielded better, clearer results on this dataset. TraceScope's RBF flow reveals *where* in the reasoning space success and failure live — and how reasoning drifts between them.
 
@@ -62,7 +62,7 @@ python examples/prm_demo.py
 </details>
 
 <details>
-<summary><img src="docs/assets/readme-live-demo-marker.svg" alt="" width="10" height="10"> <b>Live interactive demo — Recent AI papers in the browser</b></summary>
+<summary>◇ <b>Live interactive demo — Recent AI papers in the browser</b></summary>
 
 Try TraceScope in the browser: **https://pixedar.github.io/ai/tracescope/**
 
