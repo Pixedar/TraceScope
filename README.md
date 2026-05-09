@@ -1,7 +1,7 @@
 # TraceScope
 
 <p align="center">
-  <img src="docs/assets/demo_v_3.gif" alt="TraceScope demo animation" width="950">
+  <img src="docs/assets/prm_demo_v2.gif" alt="TraceScope demo animation" width="950">
 </p>
 
 **TraceScope maps the flow of meaning**
@@ -33,7 +33,7 @@ Most embedding tools show a static cloud of points. TraceScope goes further:
 The **main showcase** is PRM800K below. 
 These examples are **illustrative demonstrations** of how TraceScope works. They are meant to show the kinds of semantic structure and flow patterns the tool can reveal, **not** to serve as peer-reviewed empirical claims or definitive scientific conclusions
 <details>
-<summary><b>Main example — PRM800K: The shape of mathematical reasoning</b></summary>
+<summary><b><font color="#7aa2f7">Main example — PRM800K: The shape of mathematical reasoning</font></b></summary>
 
 438 step-by-step math reasoning chains from [PRM800K](https://github.com/openai/prm800k) (MIT license) — each chain is labeled `solved` or `found_error` (binary, perfectly complementary). Overall 65% of paths have errors, only 35% solve correctly. This example uses the **RBF flow model instead of MDN** because it yielded better, clearer results on this dataset. TraceScope's RBF flow reveals *where* in the reasoning space success and failure live — and how reasoning drifts between them.
 
@@ -59,6 +59,21 @@ The most common pattern: **paths that stay within a single attractor basin maint
 ```bash
 python examples/prm_demo.py
 ```
+</details>
+
+<details>
+<summary><b><font color="#d0d7de">Live interactive demo — Recent AI papers in the browser</font></b></summary>
+
+Try TraceScope in the browser: **https://pixedar.github.io/ai/tracescope/**
+
+Snapshot updated: **07.05.2026**. AI research moves quickly, so this demo can become outdated depending on when you check it.
+
+This hosted demo shows an interactive 3D semantic flow map of recent AI papers, with particles, attractors, probe controls, and cached explanations. It is the fastest way to explore TraceScope without installing anything.
+
+For each arXiv paper category, the demo builds a path showing how paper meanings and topics changed over the last six months. TraceScope then learns a generalized flow model from many such category paths.
+
+**Limitations:** paper publication timing is noisy, so this demo should be read as an approximate view of broad AI-research trends, not as peer-reviewed evidence about the field. TraceScope is strongest on native time-series data, such as step-by-step reasoning or agent trajectories; for research use, tune the flow parameters and validate the result statistically.
+
 </details>
 
 <details>

@@ -11,6 +11,7 @@ Faithful port of the Android EmotionApp pipeline with:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Callable, Optional, List
@@ -619,11 +620,29 @@ class AnalysisPipeline:
                     _raw_grid_fp = embeddings_fingerprint(
                         projected_3d.reshape(len(projected_3d), -1)
                     )
+                    path_ids_fp = "none"
+                    if _path_ids is not None:
+                        path_ids_fp = hashlib.sha1(
+                            json.dumps(
+                                _path_ids,
+                                separators=(",", ":"),
+                                default=str,
+                            ).encode("utf-8")
+                        ).hexdigest()[:16]
                     grid_fp = (
                         _raw_grid_fp
                         + f"|{flow_mode}"
+                        + f"|grid={velocity_grid_size}"
+                        + f"|path_ids={path_ids_fp}"
                         + f"|seed={seed if deterministic else 'nondet'}"
                     )
+                    if flow_mode == "mdn":
+                        grid_fp += f"|hidden={mdn_hidden}|iters={mdn_iters}"
+                    elif flow_mode == "rbf":
+                        grid_fp += (
+                            f"|kernel={rbf_kernel}"
+                            + f"|smoothing={rbf_smoothing}"
+                        )
                     cached_grid = self._result_cache.get_result(
                         "velocity_grid", grid_fp
                     )

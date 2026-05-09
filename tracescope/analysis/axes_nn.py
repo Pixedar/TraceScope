@@ -557,9 +557,10 @@ def train_models(cloud_json:str, mode:str="static", path_ids=None, **kwargs):
     """
     mode ∈ {"static","gpssm","mdn","gpvf","rbf"}
     path_ids: optional array of int path IDs (same length as points).
-              When provided, MDN training skips velocity pairs that cross
-              path boundaries so multiple independent paths can be analyzed
-              together without spurious boundary velocities.
+              When provided, flow trainers that support multi-path data skip
+              velocity pairs that cross path boundaries so multiple independent
+              paths can be analyzed together without spurious boundary
+              velocities.
     kwargs: forwarded to the mode function (e.g. hidden, iters, lr for MDN).
     """
     pts = np.asarray(json.loads(cloud_json), dtype=np.float32)
@@ -571,7 +572,7 @@ def train_models(cloud_json:str, mode:str="static", path_ids=None, **kwargs):
 
     _state.clear()
     call_kwargs = dict(kwargs)
-    if path_ids is not None and mode == "mdn":
+    if path_ids is not None and mode in {"mdn", "rbf"}:
         call_kwargs["path_ids"] = path_ids
     _state.update(_MODE_FNS[mode](pts, **call_kwargs))
 
